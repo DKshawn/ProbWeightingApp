@@ -8,8 +8,10 @@ __pycache__/
 dist/
 *.egg
 .env
+.env.local
 venv/
 .venv/
+.vercel/
 
 # Node / Vite
 node_modules/

@@ -5,7 +5,7 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
   const [s, setS] = useState("");
   const [validationError, setValidationError] = useState("");
 
-  const { p, x, N, block } = trial;
+  const { r, x, N, block } = trial;
   const y = stepData.y;
   const trialNum = trialIndex + 1;
 
@@ -34,7 +34,7 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
 
       <div className="question-box">
         <p>
-          <strong>（確率 {p.toFixed(3)} で {x}円）</strong> と無差別になる
+          <strong>（確率 {r.toFixed(3)} で {x}円）</strong> と無差別になる
         </p>
         <p>
           <strong>（確率 <span className="unknown">?</span> で {y}円）</strong> を答えてください

@@ -1,36 +1,74 @@
 import csv
 import io
+import os
 import uuid
 from datetime import datetime
-from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from models.result import SessionStartRequest, TrialResult
-from trial_generator import generate_all_trials
+try:
+    from .models.result import SessionStartRequest, TrialResult
+    from .storage import (
+        StorageError,
+        StorageNotConfiguredError,
+        create_session,
+        get_results_by_student,
+        get_summary as get_storage_summary,
+        save_result as save_result_record,
+        session_exists,
+        storage_mode,
+    )
+    from .trial_generator import generate_all_trials
+except ImportError:
+    from models.result import SessionStartRequest, TrialResult
+    from storage import (
+        StorageError,
+        StorageNotConfiguredError,
+        create_session,
+        get_results_by_student,
+        get_summary as get_storage_summary,
+        save_result as save_result_record,
+        session_exists,
+        storage_mode,
+    )
+    from trial_generator import generate_all_trials
 
 app = FastAPI(title="ProbWeightingApp API")
 
-# CORS: 開発環境 + Render デプロイ URL
-ALLOWED_ORIGINS = [
+# CORS: local development, legacy Render URL, and Vercel preview/production URLs.
+DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "https://probweightingapp.onrender.com",  # Render フロントエンド
 ]
+
+ALLOWED_ORIGINS = DEFAULT_ALLOWED_ORIGINS + [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+if os.getenv("VERCEL_URL"):
+    ALLOWED_ORIGINS.append(f"https://{os.environ['VERCEL_URL']}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# インメモリストレージ（本番ではDBに置き換え）
-sessions: dict[str, dict[str, Any]] = {}
-results: list[dict[str, Any]] = []
+
+def _raise_storage_http_error(exc: StorageError) -> None:
+    if isinstance(exc, StorageNotConfiguredError):
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise HTTPException(status_code=500, detail="データベース処理に失敗しました") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -42,13 +80,15 @@ def start_session(req: SessionStartRequest):
         raise HTTPException(status_code=400, detail="student_id と name は必須です")
 
     session_id = str(uuid.uuid4())
+    student_id = req.student_id.strip()
+    name = req.name.strip()
     trials = generate_all_trials()
-    sessions[session_id] = {
-        "student_id": req.student_id.strip(),
-        "name": req.name.strip(),
-        "trials": trials,
-        "created_at": datetime.now().isoformat(),
-    }
+
+    try:
+        create_session(session_id, student_id, name, trials)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
     return {"session_id": session_id, "trials": trials}
 
 
@@ -57,12 +97,20 @@ def start_session(req: SessionStartRequest):
 # ---------------------------------------------------------------------------
 @app.post("/api/results")
 def save_result(result: TrialResult):
-    if result.session_id not in sessions:
+    try:
+        exists = session_exists(result.session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not exists:
         raise HTTPException(status_code=404, detail="セッションが見つかりません")
 
     record = result.model_dump()
-    record["Timestamp"] = datetime.now().isoformat()
-    results.append(record)
+    try:
+        save_result_record(record)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
     return {"status": "ok"}
 
 
@@ -103,7 +151,11 @@ FIELD_MAP = {
 
 @app.get("/api/results/{student_id}/csv")
 def download_csv(student_id: str):
-    student_results = [r for r in results if r.get("student_id") == student_id]
+    try:
+        student_results = get_results_by_student(student_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
     if not student_results:
         raise HTTPException(status_code=404, detail="該当する結果が見つかりません")
 
@@ -130,46 +182,16 @@ def download_csv(student_id: str):
 # ---------------------------------------------------------------------------
 @app.get("/api/results/summary")
 def get_summary():
-    if not results:
-        return {"total_trials": 0, "ci_rate_overall": None, "by_block": {}, "by_N": {}}
+    try:
+        return get_storage_summary()
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
 
-    total = len(results)
-    ci_count = sum(1 for r in results if r.get("ci_satisfied"))
 
-    by_block: dict[str, dict] = {}
-    by_N: dict[str, dict] = {}
-
-    for r in results:
-        block_key = str(r["block"])
-        n_key = str(r["N"])
-
-        if block_key not in by_block:
-            by_block[block_key] = {"total": 0, "ci_count": 0}
-        by_block[block_key]["total"] += 1
-        if r.get("ci_satisfied"):
-            by_block[block_key]["ci_count"] += 1
-
-        if n_key not in by_N:
-            by_N[n_key] = {"total": 0, "ci_count": 0}
-        by_N[n_key]["total"] += 1
-        if r.get("ci_satisfied"):
-            by_N[n_key]["ci_count"] += 1
-
+@app.get("/api/health")
+def health_check():
     return {
-        "total_trials": total,
-        "ci_rate_overall": round(ci_count / total, 4) if total else None,
-        "by_block": {
-            k: {
-                **v,
-                "ci_rate": round(v["ci_count"] / v["total"], 4) if v["total"] else None,
-            }
-            for k, v in by_block.items()
-        },
-        "by_N": {
-            k: {
-                **v,
-                "ci_rate": round(v["ci_count"] / v["total"], 4) if v["total"] else None,
-            }
-            for k, v in by_N.items()
-        },
+        "status": "ok",
+        "storage": storage_mode(),
+        "timestamp": datetime.now().isoformat(),
     }
