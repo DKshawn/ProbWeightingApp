@@ -19,6 +19,10 @@ frontend/dist/
 frontend/.env
 frontend/.env.local
 
+# Local analysis/test outputs
+analysis_outputs/
+smoke_outputs/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -7,12 +7,19 @@ export default function SetupScreen({ onSetup, loading, error }) {
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (!studentId.trim() || !name.trim()) {
+    const trimmedStudentId = studentId.trim();
+    const trimmedName = name.trim();
+
+    if (!trimmedStudentId || !trimmedName) {
       setValidationError("学籍番号と氏名の両方を入力してください");
       return;
     }
+    if (!/\d$/.test(trimmedStudentId)) {
+      setValidationError("学籍番号の末尾は数字で入力してください");
+      return;
+    }
     setValidationError("");
-    onSetup(studentId.trim(), name.trim());
+    onSetup(trimmedStudentId, trimmedName);
   }
 
   return (

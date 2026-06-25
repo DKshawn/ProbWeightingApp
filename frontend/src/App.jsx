@@ -16,6 +16,8 @@ export default function App() {
     currentStep,
     currentTrial,
     stepData,
+    experimentMode,
+    timePressureSeconds,
     loading,
     error,
     handleSetup,
@@ -67,6 +69,8 @@ export default function App() {
           trialIndex={currentTrialIndex}
           totalTrials={totalTrials}
           onNext={submitStep4}
+          experimentMode={experimentMode}
+          timePressureSeconds={timePressureSeconds}
           loading={loading}
         />
       );

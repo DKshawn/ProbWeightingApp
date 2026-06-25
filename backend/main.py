@@ -64,11 +64,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+TIME_PRESSURE_SECONDS = 20
+
 
 def _raise_storage_http_error(exc: StorageError) -> None:
     if isinstance(exc, StorageNotConfiguredError):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     raise HTTPException(status_code=500, detail="データベース処理に失敗しました") from exc
+
+
+def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
+    if not student_id or not student_id[-1].isdigit():
+        raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
+
+    last_digit = int(student_id[-1])
+    if last_digit % 2 == 1:
+        return "time_pressure", TIME_PRESSURE_SECONDS
+    return "normal", 0
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +94,20 @@ def start_session(req: SessionStartRequest):
     session_id = str(uuid.uuid4())
     student_id = req.student_id.strip()
     name = req.name.strip()
+    experiment_mode, time_pressure_seconds = _assign_experiment_mode(student_id)
     trials = generate_all_trials()
 
     try:
-        create_session(session_id, student_id, name, trials)
+        create_session(session_id, student_id, name, trials, experiment_mode, time_pressure_seconds)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return {"session_id": session_id, "trials": trials}
+    return {
+        "session_id": session_id,
+        "trials": trials,
+        "experiment_mode": experiment_mode,
+        "time_pressure_seconds": time_pressure_seconds,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +137,11 @@ def save_result(result: TrialResult):
 # ---------------------------------------------------------------------------
 CSV_COLUMNS = [
     "StudentID", "Name", "Trial", "Block", "N",
+    "experiment_mode", "time_pressure_seconds",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
-    "choice", "ci_satisfied", "Timestamp",
+    "choice", "ci_satisfied", "response_time_ms", "timed_out", "Timestamp",
 ]
 
 FIELD_MAP = {
@@ -131,6 +150,8 @@ FIELD_MAP = {
     "Trial": "trial",
     "Block": "block",
     "N": "N",
+    "experiment_mode": "experiment_mode",
+    "time_pressure_seconds": "time_pressure_seconds",
     "p": "p",
     "q": "q",
     "r": "r",
@@ -145,6 +166,8 @@ FIELD_MAP = {
     "sN": "sN",
     "choice": "choice",
     "ci_satisfied": "ci_satisfied",
+    "response_time_ms": "response_time_ms",
+    "timed_out": "timed_out",
     "Timestamp": "Timestamp",
 }
 

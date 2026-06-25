@@ -59,6 +59,8 @@ def ensure_schema() -> None:
                     session_id UUID PRIMARY KEY,
                     student_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    experiment_mode TEXT NOT NULL DEFAULT 'normal',
+                    time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
                     trials JSONB NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
@@ -68,6 +70,8 @@ def ensure_schema() -> None:
                     session_id UUID NOT NULL REFERENCES prob_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    experiment_mode TEXT NOT NULL DEFAULT 'normal',
+                    time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
                     trial INTEGER NOT NULL,
                     block INTEGER NOT NULL,
                     n INTEGER NOT NULL,
@@ -83,28 +87,59 @@ def ensure_schema() -> None:
                     qn DOUBLE PRECISION NOT NULL,
                     rn DOUBLE PRECISION NOT NULL,
                     sn DOUBLE PRECISION NOT NULL,
-                    choice TEXT NOT NULL CHECK (choice IN ('X', 'Indifferent', 'Y')),
+                    choice TEXT NOT NULL CHECK (choice IN ('X', 'Indifferent', 'Y', 'Timeout')),
                     ci_satisfied BOOLEAN NOT NULL,
+                    response_time_ms INTEGER,
+                    timed_out BOOLEAN NOT NULL DEFAULT FALSE,
                     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (session_id, trial)
                 );
+
+                ALTER TABLE prob_sessions
+                    ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
+                    ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0;
+
+                ALTER TABLE trial_results
+                    ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
+                    ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
+                    ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE;
+
+                ALTER TABLE trial_results
+                    DROP CONSTRAINT IF EXISTS trial_results_choice_check;
+
+                ALTER TABLE trial_results
+                    ADD CONSTRAINT trial_results_choice_check
+                    CHECK (choice IN ('X', 'Indifferent', 'Y', 'Timeout'));
 
                 CREATE INDEX IF NOT EXISTS idx_trial_results_student_id
                     ON trial_results(student_id);
 
                 CREATE INDEX IF NOT EXISTS idx_trial_results_summary
                     ON trial_results(block, n, trial);
+
+                CREATE INDEX IF NOT EXISTS idx_trial_results_experiment_mode
+                    ON trial_results(experiment_mode);
                 """
             )
         conn.commit()
     _schema_ready = True
 
 
-def create_session(session_id: str, student_id: str, name: str, trials: list[dict]) -> None:
+def create_session(
+    session_id: str,
+    student_id: str,
+    name: str,
+    trials: list[dict],
+    experiment_mode: str = "normal",
+    time_pressure_seconds: int = 0,
+) -> None:
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         _memory_sessions[session_id] = {
             "student_id": student_id,
             "name": name,
+            "experiment_mode": experiment_mode,
+            "time_pressure_seconds": time_pressure_seconds,
             "trials": trials,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -115,10 +150,12 @@ def create_session(session_id: str, student_id: str, name: str, trials: list[dic
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO prob_sessions (session_id, student_id, name, trials)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO prob_sessions (
+                    session_id, student_id, name, experiment_mode, time_pressure_seconds, trials
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (session_id, student_id, name, Jsonb(trials)),
+                (session_id, student_id, name, experiment_mode, time_pressure_seconds, Jsonb(trials)),
             )
         conn.commit()
 
@@ -162,22 +199,27 @@ def save_result(record: dict[str, Any]) -> None:
             cur.execute(
                 """
                 INSERT INTO trial_results (
-                    session_id, student_id, name, trial, block, n,
+                    session_id, student_id, name, experiment_mode, time_pressure_seconds,
+                    trial, block, n,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
                     pn, qn, rn, sn,
-                    choice, ci_satisfied, timestamp
+                    choice, ci_satisfied, response_time_ms, timed_out, timestamp
                 )
                 VALUES (
-                    %(session_id)s, %(student_id)s, %(name)s, %(trial)s, %(block)s, %(N)s,
+                    %(session_id)s, %(student_id)s, %(name)s,
+                    %(experiment_mode)s, %(time_pressure_seconds)s,
+                    %(trial)s, %(block)s, %(N)s,
                     %(p)s, %(q)s, %(r)s, %(x)s, %(x_prime)s,
                     %(y)s, %(s)s, %(y_prime)s,
                     %(pN)s, %(qN)s, %(rN)s, %(sN)s,
-                    %(choice)s, %(ci_satisfied)s, %(timestamp)s
+                    %(choice)s, %(ci_satisfied)s, %(response_time_ms)s, %(timed_out)s, %(timestamp)s
                 )
                 ON CONFLICT (session_id, trial) DO UPDATE SET
                     student_id = EXCLUDED.student_id,
                     name = EXCLUDED.name,
+                    experiment_mode = EXCLUDED.experiment_mode,
+                    time_pressure_seconds = EXCLUDED.time_pressure_seconds,
                     block = EXCLUDED.block,
                     n = EXCLUDED.n,
                     p = EXCLUDED.p,
@@ -194,6 +236,8 @@ def save_result(record: dict[str, Any]) -> None:
                     sn = EXCLUDED.sn,
                     choice = EXCLUDED.choice,
                     ci_satisfied = EXCLUDED.ci_satisfied,
+                    response_time_ms = EXCLUDED.response_time_ms,
+                    timed_out = EXCLUDED.timed_out,
                     timestamp = EXCLUDED.timestamp
                 """,
                 {**record, "timestamp": timestamp},
@@ -228,6 +272,8 @@ def get_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 SELECT
                     student_id,
                     name,
+                    experiment_mode,
+                    time_pressure_seconds,
                     trial,
                     block,
                     n AS "N",
@@ -245,6 +291,8 @@ def get_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     sn AS "sN",
                     choice,
                     ci_satisfied,
+                    response_time_ms,
+                    timed_out,
                     timestamp AS "Timestamp"
                 FROM trial_results
                 WHERE student_id = %s
@@ -277,6 +325,16 @@ def get_summary() -> dict[str, Any]:
 
             cur.execute(
                 """
+                SELECT experiment_mode, COUNT(*) AS total, COUNT(*) FILTER (WHERE ci_satisfied) AS ci_count
+                FROM trial_results
+                GROUP BY experiment_mode
+                ORDER BY experiment_mode
+                """
+            )
+            by_mode_rows = cur.fetchall()
+
+            cur.execute(
+                """
                 SELECT block, COUNT(*) AS total, COUNT(*) FILTER (WHERE ci_satisfied) AS ci_count
                 FROM trial_results
                 GROUP BY block
@@ -305,7 +363,7 @@ def get_summary() -> dict[str, Any]:
             )
             by_trial_rows = cur.fetchall()
 
-    return _format_summary(overall, by_block_rows, by_n_rows, by_trial_rows)
+    return _format_summary(overall, by_mode_rows, by_block_rows, by_n_rows, by_trial_rows)
 
 
 def _summary_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -315,18 +373,22 @@ def _summary_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
     grouped: dict[str, dict[str, dict[str, int]]] = {
+        "experiment_mode": {},
         "block": {},
         "N": {},
         "trial": {},
     }
     for row in rows:
         for field in grouped:
-            key = str(row[field])
+            key = str(row.get(field, "normal"))
             grouped[field].setdefault(key, {"total": 0, "ci_count": 0})
             grouped[field][key]["total"] += 1
             if row.get("ci_satisfied"):
                 grouped[field][key]["ci_count"] += 1
 
+    by_mode_rows = [
+        {"experiment_mode": k, **v} for k, v in sorted(grouped["experiment_mode"].items())
+    ]
     by_block_rows = [
         {"block": int(k), **v} for k, v in sorted(grouped["block"].items(), key=lambda item: int(item[0]))
     ]
@@ -334,11 +396,12 @@ def _summary_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_trial_rows = [
         {"trial": int(k), **v} for k, v in sorted(grouped["trial"].items(), key=lambda item: int(item[0]))
     ]
-    return _format_summary(overall, by_block_rows, by_n_rows, by_trial_rows)
+    return _format_summary(overall, by_mode_rows, by_block_rows, by_n_rows, by_trial_rows)
 
 
 def _format_summary(
     overall: dict[str, Any],
+    by_mode_rows: list[dict[str, Any]],
     by_block_rows: list[dict[str, Any]],
     by_n_rows: list[dict[str, Any]],
     by_trial_rows: list[dict[str, Any]],
@@ -349,6 +412,14 @@ def _format_summary(
     return {
         "total_trials": total,
         "ci_rate_overall": _rate(ci_count, total),
+        "by_experiment_mode": {
+            row["experiment_mode"]: {
+                "total": int(row["total"]),
+                "ci_count": int(row["ci_count"]),
+                "ci_rate": _rate(int(row["ci_count"]), int(row["total"])),
+            }
+            for row in by_mode_rows
+        },
         "by_block": {
             str(row["block"]): {
                 "total": int(row["total"]),
