@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional
 
 
@@ -60,3 +60,22 @@ class TrialResult(BaseModel):
         if v is not None and v < 0:
             raise ValueError("response_time_ms must be 0 or greater")
         return v
+
+    @model_validator(mode="after")
+    def validate_indifference_directions(self):
+        if self.p > self.q and self.y < self.x:
+            raise ValueError(f"Step 1 invalid: probability {self.q:.3f} is lower than {self.p:.3f}, so y cannot be lower than {self.x}")
+        if self.p < self.q and self.y > self.x:
+            raise ValueError(f"Step 1 invalid: probability {self.q:.3f} is higher than {self.p:.3f}, so y cannot be higher than {self.x}")
+
+        if self.x > self.y and self.s < self.r:
+            raise ValueError(f"Step 2 invalid: amount {self.y} is lower than {self.x}, so s cannot be lower than {self.r:.3f}")
+        if self.x < self.y and self.s > self.r:
+            raise ValueError(f"Step 2 invalid: amount {self.y} is higher than {self.x}, so s cannot be higher than {self.r:.3f}")
+
+        if self.pN > self.qN and self.y_prime < self.x_prime:
+            raise ValueError(f"Step 3 invalid: probability {self.qN:.3f} is lower than {self.pN:.3f}, so y_prime cannot be lower than {self.x_prime}")
+        if self.pN < self.qN and self.y_prime > self.x_prime:
+            raise ValueError(f"Step 3 invalid: probability {self.qN:.3f} is higher than {self.pN:.3f}, so y_prime cannot be higher than {self.x_prime}")
+
+        return self

@@ -15,6 +15,14 @@ export default function Step1Screen({ trial, trialIndex, totalTrials, onNext }) 
       setValidationError("1〜100,000,000 の数値を入力してください");
       return;
     }
+    if (p > q && val < x) {
+      setValidationError(`確率 ${q.toFixed(3)} は確率 ${p.toFixed(3)} より小さいため、?円は${x}円より小さくできません`);
+      return;
+    }
+    if (p < q && val > x) {
+      setValidationError(`確率 ${q.toFixed(3)} は確率 ${p.toFixed(3)} より大きいため、?円は${x}円より大きくできません`);
+      return;
+    }
     setValidationError("");
     onNext(val);
   }

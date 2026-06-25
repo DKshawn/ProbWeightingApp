@@ -6,8 +6,10 @@ export default function Step3Screen({ trial, trialIndex, totalTrials, onNext }) 
   const [validationError, setValidationError] = useState("");
 
   const { p, q, x_prime, N, block } = trial;
-  const pN = (p ** N).toFixed(3);
-  const qN = (q ** N).toFixed(3);
+  const pNValue = p ** N;
+  const qNValue = q ** N;
+  const pN = pNValue.toFixed(3);
+  const qN = qNValue.toFixed(3);
   const trialNum = trialIndex + 1;
 
   function handleSubmit(e) {
@@ -15,6 +17,14 @@ export default function Step3Screen({ trial, trialIndex, totalTrials, onNext }) 
     const val = parseFloat(yPrime);
     if (isNaN(val) || val < 1 || val > 100_000_000 || !Number.isFinite(val)) {
       setValidationError("1〜100,000,000 の数値を入力してください");
+      return;
+    }
+    if (pNValue > qNValue && val < x_prime) {
+      setValidationError(`確率 ${qN} は確率 ${pN} より小さいため、?円は${x_prime}円より小さくできません`);
+      return;
+    }
+    if (pNValue < qNValue && val > x_prime) {
+      setValidationError(`確率 ${qN} は確率 ${pN} より大きいため、?円は${x_prime}円より大きくできません`);
       return;
     }
     setValidationError("");

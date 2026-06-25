@@ -16,6 +16,14 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
       setValidationError("0より大きく1より小さい確率を入力してください");
       return;
     }
+    if (x > y && val < r) {
+      setValidationError(`金額 ${y}円は金額 ${x}円より小さいため、確率 ? は確率 ${r.toFixed(3)} より小さくできません`);
+      return;
+    }
+    if (x < y && val > r) {
+      setValidationError(`金額 ${y}円は金額 ${x}円より大きいため、確率 ? は確率 ${r.toFixed(3)} より大きくできません`);
+      return;
+    }
     if (val ** N < 0.05) {
       setValidationError(
         `その確率では次のステップで確率が小さくなりすぎます（${val.toFixed(3)}^${N} = ${(val ** N).toFixed(4)} < 0.05）。別の値を入力してください`
