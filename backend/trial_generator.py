@@ -3,6 +3,7 @@ import random
 PROB_GRID = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
 AMOUNT_GRID = list(range(10, 110, 10))  # 10〜100（10刻み）
 TRIALS_PER_BLOCK = 10
+N_BLOCKS = [1, 2, 3]
 
 
 def generate_trial(N: int, trial_num: int) -> dict:
@@ -24,7 +25,7 @@ def generate_trial(N: int, trial_num: int) -> dict:
             break
     x = random.choice(AMOUNT_GRID)
     x_prime = random.choice(AMOUNT_GRID)
-    block = 1 if N == 2 else 2
+    block = N_BLOCKS.index(N) + 1
     return {
         "trial": trial_num,
         "block": block,
@@ -38,12 +39,11 @@ def generate_trial(N: int, trial_num: int) -> dict:
 
 
 def generate_all_trials() -> list[dict]:
-    """セッション開始時に全20試行を事前生成する。"""
+    """セッション開始時に全30試行を事前生成する。"""
     trials = []
-    # Block A: N=2, Trial 1-10
-    for i in range(1, TRIALS_PER_BLOCK + 1):
-        trials.append(generate_trial(N=2, trial_num=i))
-    # Block B: N=3, Trial 11-20
-    for i in range(TRIALS_PER_BLOCK + 1, TRIALS_PER_BLOCK * 2 + 1):
-        trials.append(generate_trial(N=3, trial_num=i))
+    for block_index, N in enumerate(N_BLOCKS):
+        start = block_index * TRIALS_PER_BLOCK + 1
+        end = start + TRIALS_PER_BLOCK
+        for trial_num in range(start, end):
+            trials.append(generate_trial(N=N, trial_num=trial_num))
     return trials

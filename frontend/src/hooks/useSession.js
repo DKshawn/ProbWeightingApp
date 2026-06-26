@@ -15,7 +15,7 @@ export function useSession() {
   const [error, setError] = useState(null);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
-  const totalTrials = trials.length; // 20
+  const totalTrials = trials.length;
 
   async function handleSetup(sid, sname) {
     setLoading(true);
@@ -93,9 +93,9 @@ export function useSession() {
       });
 
       const nextIndex = currentTrialIndex + 1;
+      const nextTrial = trials[nextIndex];
 
-      // Block A（10試行）終了後にブロック間休憩画面
-      if (nextIndex === 10 && nextIndex < totalTrials) {
+      if (nextIndex < totalTrials && nextTrial?.block !== trial.block) {
         setCurrentTrialIndex(nextIndex);
         setStepData({});
         setCurrentStep(6); // block break

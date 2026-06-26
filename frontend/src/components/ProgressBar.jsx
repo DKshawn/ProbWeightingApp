@@ -1,6 +1,6 @@
 export default function ProgressBar({ current, total, block, N }) {
   const pct = Math.round((current / total) * 100);
-  const blockLabel = block === 1 ? "前半：N=2" : "後半：N=3";
+  const blockLabel = `第${block}ブロック：N=${N}`;
 
   return (
     <div className="progress-bar-wrapper">

@@ -77,7 +77,7 @@ export default function App() {
     case 5:
       return <FinishScreen studentId={studentId} />;
     case 6:
-      return <BlockBreakScreen onContinue={startNextBlock} />;
+      return <BlockBreakScreen nextTrial={currentTrial} onContinue={startNextBlock} />;
     default:
       return null;
   }
