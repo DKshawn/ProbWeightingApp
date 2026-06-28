@@ -13,6 +13,7 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 _schema_ready = False
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_results: list[dict[str, Any]] = []
+_memory_utility_results: list[dict[str, Any]] = []
 
 
 class StorageError(RuntimeError):
@@ -59,6 +60,7 @@ def ensure_schema() -> None:
                     session_id UUID PRIMARY KEY,
                     student_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
                     trials JSONB NOT NULL,
@@ -70,6 +72,7 @@ def ensure_schema() -> None:
                     session_id UUID NOT NULL REFERENCES prob_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
                     trial INTEGER NOT NULL,
@@ -95,11 +98,43 @@ def ensure_schema() -> None:
                     UNIQUE (session_id, trial)
                 );
 
+                CREATE TABLE IF NOT EXISTS utility_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id UUID NOT NULL REFERENCES prob_sessions(session_id) ON DELETE CASCADE,
+                    student_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
+                    experiment_mode TEXT NOT NULL DEFAULT 'normal',
+                    time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    utility_trial INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    row INTEGER NOT NULL,
+                    p DOUBLE PRECISION NOT NULL,
+                    r_amount DOUBLE PRECISION NOT NULL,
+                    capital_r_amount DOUBLE PRECISION NOT NULL,
+                    x_prev DOUBLE PRECISION NOT NULL,
+                    x_candidate DOUBLE PRECISION NOT NULL,
+                    increment DOUBLE PRECISION NOT NULL,
+                    choice TEXT NOT NULL CHECK (choice IN ('A', 'B', 'Timeout')),
+                    x_estimate DOUBLE PRECISION,
+                    switch_lower DOUBLE PRECISION,
+                    switch_upper DOUBLE PRECISION,
+                    switch_status TEXT NOT NULL CHECK (
+                        switch_status IN ('bracketed', 'below_range', 'above_range', 'timeout')
+                    ),
+                    response_time_ms INTEGER,
+                    timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (session_id, utility_trial)
+                );
+
                 ALTER TABLE prob_sessions
+                    ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0;
 
                 ALTER TABLE trial_results
+                    ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
                     ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
@@ -112,6 +147,24 @@ def ensure_schema() -> None:
                     ADD CONSTRAINT trial_results_choice_check
                     CHECK (choice IN ('X', 'Indifferent', 'Y', 'Timeout'));
 
+                ALTER TABLE utility_results
+                    ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
+                    ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE;
+
+                ALTER TABLE utility_results
+                    DROP CONSTRAINT IF EXISTS utility_results_choice_check;
+
+                ALTER TABLE utility_results
+                    ADD CONSTRAINT utility_results_choice_check
+                    CHECK (choice IN ('A', 'B', 'Timeout'));
+
+                ALTER TABLE utility_results
+                    DROP CONSTRAINT IF EXISTS utility_results_switch_status_check;
+
+                ALTER TABLE utility_results
+                    ADD CONSTRAINT utility_results_switch_status_check
+                    CHECK (switch_status IN ('bracketed', 'below_range', 'above_range', 'timeout'));
+
                 CREATE INDEX IF NOT EXISTS idx_trial_results_student_id
                     ON trial_results(student_id);
 
@@ -120,6 +173,12 @@ def ensure_schema() -> None:
 
                 CREATE INDEX IF NOT EXISTS idx_trial_results_experiment_mode
                     ON trial_results(experiment_mode);
+
+                CREATE INDEX IF NOT EXISTS idx_utility_results_student_id
+                    ON utility_results(student_id);
+
+                CREATE INDEX IF NOT EXISTS idx_utility_results_sequence
+                    ON utility_results(sequence, row);
                 """
             )
         conn.commit()
@@ -131,6 +190,7 @@ def create_session(
     student_id: str,
     name: str,
     trials: list[dict],
+    study_mode: str = "full",
     experiment_mode: str = "normal",
     time_pressure_seconds: int = 0,
 ) -> None:
@@ -138,6 +198,7 @@ def create_session(
         _memory_sessions[session_id] = {
             "student_id": student_id,
             "name": name,
+            "study_mode": study_mode,
             "experiment_mode": experiment_mode,
             "time_pressure_seconds": time_pressure_seconds,
             "trials": trials,
@@ -151,11 +212,11 @@ def create_session(
             cur.execute(
                 """
                 INSERT INTO prob_sessions (
-                    session_id, student_id, name, experiment_mode, time_pressure_seconds, trials
+                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds, trials
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (session_id, student_id, name, experiment_mode, time_pressure_seconds, Jsonb(trials)),
+                (session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds, Jsonb(trials)),
             )
         conn.commit()
 
@@ -199,7 +260,7 @@ def save_result(record: dict[str, Any]) -> None:
             cur.execute(
                 """
                 INSERT INTO trial_results (
-                    session_id, student_id, name, experiment_mode, time_pressure_seconds,
+                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
                     trial, block, n,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
@@ -207,7 +268,7 @@ def save_result(record: dict[str, Any]) -> None:
                     choice, ci_satisfied, response_time_ms, timed_out, timestamp
                 )
                 VALUES (
-                    %(session_id)s, %(student_id)s, %(name)s,
+                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s,
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(trial)s, %(block)s, %(N)s,
                     %(p)s, %(q)s, %(r)s, %(x)s, %(x_prime)s,
@@ -218,6 +279,7 @@ def save_result(record: dict[str, Any]) -> None:
                 ON CONFLICT (session_id, trial) DO UPDATE SET
                     student_id = EXCLUDED.student_id,
                     name = EXCLUDED.name,
+                    study_mode = EXCLUDED.study_mode,
                     experiment_mode = EXCLUDED.experiment_mode,
                     time_pressure_seconds = EXCLUDED.time_pressure_seconds,
                     block = EXCLUDED.block,
@@ -241,6 +303,78 @@ def save_result(record: dict[str, Any]) -> None:
                     timestamp = EXCLUDED.timestamp
                 """,
                 {**record, "timestamp": timestamp},
+            )
+        conn.commit()
+
+
+def save_utility_results(records: list[dict[str, Any]]) -> None:
+    timestamp = datetime.now(timezone.utc)
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        for record in records:
+            memory_record = {**record, "Timestamp": timestamp.isoformat()}
+            existing_index = next(
+                (
+                    i
+                    for i, item in enumerate(_memory_utility_results)
+                    if (
+                        item["session_id"] == record["session_id"]
+                        and item["utility_trial"] == record["utility_trial"]
+                    )
+                ),
+                None,
+            )
+            if existing_index is None:
+                _memory_utility_results.append(memory_record)
+            else:
+                _memory_utility_results[existing_index] = memory_record
+        return
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO utility_results (
+                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
+                    utility_trial, sequence, row,
+                    p, r_amount, capital_r_amount,
+                    x_prev, x_candidate, increment,
+                    choice, x_estimate, switch_lower, switch_upper, switch_status,
+                    response_time_ms, timed_out, timestamp
+                )
+                VALUES (
+                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s,
+                    %(experiment_mode)s, %(time_pressure_seconds)s,
+                    %(utility_trial)s, %(sequence)s, %(row)s,
+                    %(p)s, %(r_amount)s, %(R_amount)s,
+                    %(x_prev)s, %(x_candidate)s, %(increment)s,
+                    %(choice)s, %(x_estimate)s, %(switch_lower)s, %(switch_upper)s,
+                    %(switch_status)s, %(response_time_ms)s, %(timed_out)s, %(timestamp)s
+                )
+                ON CONFLICT (session_id, utility_trial) DO UPDATE SET
+                    student_id = EXCLUDED.student_id,
+                    name = EXCLUDED.name,
+                    study_mode = EXCLUDED.study_mode,
+                    experiment_mode = EXCLUDED.experiment_mode,
+                    time_pressure_seconds = EXCLUDED.time_pressure_seconds,
+                    sequence = EXCLUDED.sequence,
+                    row = EXCLUDED.row,
+                    p = EXCLUDED.p,
+                    r_amount = EXCLUDED.r_amount,
+                    capital_r_amount = EXCLUDED.capital_r_amount,
+                    x_prev = EXCLUDED.x_prev,
+                    x_candidate = EXCLUDED.x_candidate,
+                    increment = EXCLUDED.increment,
+                    choice = EXCLUDED.choice,
+                    x_estimate = EXCLUDED.x_estimate,
+                    switch_lower = EXCLUDED.switch_lower,
+                    switch_upper = EXCLUDED.switch_upper,
+                    switch_status = EXCLUDED.switch_status,
+                    response_time_ms = EXCLUDED.response_time_ms,
+                    timed_out = EXCLUDED.timed_out,
+                    timestamp = EXCLUDED.timestamp
+                """,
+                [{**record, "timestamp": timestamp} for record in records],
             )
         conn.commit()
 
@@ -272,6 +406,7 @@ def get_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 SELECT
                     student_id,
                     name,
+                    study_mode,
                     experiment_mode,
                     time_pressure_seconds,
                     trial,
@@ -297,6 +432,55 @@ def get_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 FROM trial_results
                 WHERE student_id = %s
                 ORDER BY timestamp ASC, session_id ASC, trial ASC
+                """,
+                (student_id,),
+            )
+            rows = cur.fetchall()
+    return [_normalize_result(row) for row in rows]
+
+
+def get_utility_results_by_student(student_id: str) -> list[dict[str, Any]]:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        return [
+            r
+            for r in sorted(
+                _memory_utility_results,
+                key=lambda item: (item.get("Timestamp", ""), item.get("session_id", ""), item.get("utility_trial", 0)),
+            )
+            if r.get("student_id") == student_id
+        ]
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    student_id,
+                    name,
+                    study_mode,
+                    experiment_mode,
+                    time_pressure_seconds,
+                    utility_trial,
+                    sequence,
+                    row,
+                    p,
+                    r_amount,
+                    capital_r_amount AS "R_amount",
+                    x_prev,
+                    x_candidate,
+                    increment,
+                    choice,
+                    x_estimate,
+                    switch_lower,
+                    switch_upper,
+                    switch_status,
+                    response_time_ms,
+                    timed_out,
+                    timestamp AS "Timestamp"
+                FROM utility_results
+                WHERE student_id = %s
+                ORDER BY timestamp ASC, session_id ASC, utility_trial ASC
                 """,
                 (student_id,),
             )

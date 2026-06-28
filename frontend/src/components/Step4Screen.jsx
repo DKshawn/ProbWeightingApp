@@ -19,6 +19,7 @@ export default function Step4Screen({
   const hasTimePressure = experimentMode === "time_pressure" && timePressureSeconds > 0;
   const totalMs = timePressureSeconds * 1000;
   const [remainingSeconds, setRemainingSeconds] = useState(timePressureSeconds);
+  const [isFinished, setIsFinished] = useState(false);
   const startTimeRef = useRef(null);
   const frameRef = useRef(null);
   const finishedRef = useRef(false);
@@ -33,11 +34,8 @@ export default function Step4Screen({
     startTimeRef.current = performance.now();
 
     if (!hasTimePressure) {
-      setRemainingSeconds(0);
       return () => {};
     }
-
-    setRemainingSeconds(timePressureSeconds);
 
     function updateTimer(now) {
       if (finishedRef.current) return;
@@ -48,6 +46,7 @@ export default function Step4Screen({
 
       if (elapsed >= totalMs) {
         finishedRef.current = true;
+        setIsFinished(true);
         onNextRef.current("Timeout", {
           responseTimeMs: Math.round(totalMs),
           timedOut: true,
@@ -72,6 +71,7 @@ export default function Step4Screen({
     if (finishedRef.current || loading) return;
 
     finishedRef.current = true;
+    setIsFinished(true);
     if (frameRef.current !== null) {
       cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
@@ -87,7 +87,7 @@ export default function Step4Screen({
     });
   }
 
-  const buttonsDisabled = loading || finishedRef.current;
+  const buttonsDisabled = loading || isFinished;
 
   return (
     <div className="screen">

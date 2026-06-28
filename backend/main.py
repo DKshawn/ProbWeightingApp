@@ -9,27 +9,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 try:
-    from .models.result import SessionStartRequest, TrialResult
+    from .models.result import SessionStartRequest, TrialResult, UtilityElicitationBatch
     from .storage import (
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        get_utility_results_by_student,
         get_results_by_student,
         get_summary as get_storage_summary,
         save_result as save_result_record,
+        save_utility_results as save_utility_result_records,
         session_exists,
         storage_mode,
     )
     from .trial_generator import generate_all_trials
 except ImportError:
-    from models.result import SessionStartRequest, TrialResult
+    from models.result import SessionStartRequest, TrialResult, UtilityElicitationBatch
     from storage import (
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        get_utility_results_by_student,
         get_results_by_student,
         get_summary as get_storage_summary,
         save_result as save_result_record,
+        save_utility_results as save_utility_result_records,
         session_exists,
         storage_mode,
     )
@@ -65,6 +69,7 @@ app.add_middleware(
 )
 
 TIME_PRESSURE_SECONDS = 20
+UTILITY_TIME_PRESSURE_SECONDS = 15
 
 
 def _raise_storage_http_error(exc: StorageError) -> None:
@@ -83,6 +88,16 @@ def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
     return "normal", 0
 
 
+def _assign_utility_experiment_mode(student_id: str) -> tuple[str, int]:
+    if not student_id or not student_id[-1].isdigit():
+        raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
+
+    last_digit = int(student_id[-1])
+    if last_digit % 2 == 0:
+        return "time_pressure", UTILITY_TIME_PRESSURE_SECONDS
+    return "normal", 0
+
+
 # ---------------------------------------------------------------------------
 # POST /api/session/start
 # ---------------------------------------------------------------------------
@@ -94,11 +109,13 @@ def start_session(req: SessionStartRequest):
     session_id = str(uuid.uuid4())
     student_id = req.student_id.strip()
     name = req.name.strip()
+    study_mode = req.study_mode
     experiment_mode, time_pressure_seconds = _assign_experiment_mode(student_id)
-    trials = generate_all_trials()
+    utility_experiment_mode, utility_time_pressure_seconds = _assign_utility_experiment_mode(student_id)
+    trials = generate_all_trials(study_mode=study_mode)
 
     try:
-        create_session(session_id, student_id, name, trials, experiment_mode, time_pressure_seconds)
+        create_session(session_id, student_id, name, trials, study_mode, experiment_mode, time_pressure_seconds)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
@@ -107,6 +124,9 @@ def start_session(req: SessionStartRequest):
         "trials": trials,
         "experiment_mode": experiment_mode,
         "time_pressure_seconds": time_pressure_seconds,
+        "utility_experiment_mode": utility_experiment_mode,
+        "utility_time_pressure_seconds": utility_time_pressure_seconds,
+        "study_mode": study_mode,
     }
 
 
@@ -133,11 +153,38 @@ def save_result(result: TrialResult):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/utility-results
+# ---------------------------------------------------------------------------
+@app.post("/api/utility-results")
+def save_utility_results(batch: UtilityElicitationBatch):
+    session_ids = {result.session_id for result in batch.results}
+    if len(session_ids) != 1:
+        raise HTTPException(status_code=400, detail="同じセッションの結果だけを送信してください")
+
+    session_id = next(iter(session_ids))
+    try:
+        exists = session_exists(session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not exists:
+        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+    records = [result.model_dump() for result in batch.results]
+    try:
+        save_utility_result_records(records)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "saved": len(records)}
+
+
+# ---------------------------------------------------------------------------
 # GET /api/results/{student_id}/csv
 # ---------------------------------------------------------------------------
 CSV_COLUMNS = [
     "StudentID", "Name", "Trial", "Block", "N",
-    "experiment_mode", "time_pressure_seconds",
+    "study_mode", "experiment_mode", "time_pressure_seconds",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
@@ -147,6 +194,7 @@ CSV_COLUMNS = [
 FIELD_MAP = {
     "StudentID": "student_id",
     "Name": "name",
+    "study_mode": "study_mode",
     "Trial": "trial",
     "Block": "block",
     "N": "N",
@@ -171,6 +219,39 @@ FIELD_MAP = {
     "Timestamp": "Timestamp",
 }
 
+UTILITY_CSV_COLUMNS = [
+    "StudentID", "Name", "utility_trial", "sequence", "row",
+    "study_mode", "experiment_mode", "time_pressure_seconds",
+    "p", "r_amount", "R_amount", "x_prev", "x_candidate", "increment",
+    "choice", "x_estimate", "switch_lower", "switch_upper", "switch_status",
+    "response_time_ms", "timed_out", "Timestamp",
+]
+
+UTILITY_FIELD_MAP = {
+    "StudentID": "student_id",
+    "Name": "name",
+    "study_mode": "study_mode",
+    "utility_trial": "utility_trial",
+    "sequence": "sequence",
+    "row": "row",
+    "experiment_mode": "experiment_mode",
+    "time_pressure_seconds": "time_pressure_seconds",
+    "p": "p",
+    "r_amount": "r_amount",
+    "R_amount": "R_amount",
+    "x_prev": "x_prev",
+    "x_candidate": "x_candidate",
+    "increment": "increment",
+    "choice": "choice",
+    "x_estimate": "x_estimate",
+    "switch_lower": "switch_lower",
+    "switch_upper": "switch_upper",
+    "switch_status": "switch_status",
+    "response_time_ms": "response_time_ms",
+    "timed_out": "timed_out",
+    "Timestamp": "Timestamp",
+}
+
 
 @app.get("/api/results/{student_id}/csv")
 def download_csv(student_id: str):
@@ -190,6 +271,34 @@ def download_csv(student_id: str):
     writer.writeheader()
     for r in student_results:
         row = {col: r.get(FIELD_MAP[col], "") for col in CSV_COLUMNS}
+        writer.writerow(row)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/utility-results/{student_id}/csv")
+def download_utility_csv(student_id: str):
+    try:
+        student_results = get_utility_results_by_student(student_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not student_results:
+        raise HTTPException(status_code=404, detail="該当する utility 結果が見つかりません")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"UtilityElicitation_{student_id}_{timestamp}.csv"
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=UTILITY_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for r in student_results:
+        row = {col: r.get(UTILITY_FIELD_MAP[col], "") for col in UTILITY_CSV_COLUMNS}
         writer.writerow(row)
 
     output.seek(0)
