@@ -118,7 +118,7 @@ export function useSession() {
       setUtilitySequenceIndex(0);
       setUtilityXPrev(UTILITY_DESIGN.initialXPrev);
       setIncludeProbabilityCsv(true);
-      setCurrentStep(1);
+      setCurrentStep(7);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -191,9 +191,7 @@ export function useSession() {
         setCurrentStep(6); // block break
       } else if (nextIndex >= totalTrials) {
         setStepData({});
-        setUtilitySequenceIndex(0);
-        setUtilityXPrev(UTILITY_DESIGN.initialXPrev);
-        setCurrentStep(7); // utility intro
+        setCurrentStep(5);
       } else {
         setCurrentTrialIndex(nextIndex);
         setStepData({});
@@ -250,7 +248,13 @@ export function useSession() {
 
       const nextSequenceIndex = utilitySequenceIndex + 1;
       if (nextSequenceIndex >= UTILITY_DESIGN.sequenceCount) {
-        setCurrentStep(5);
+        if (includeProbabilityCsv && totalTrials > 0) {
+          setCurrentTrialIndex(0);
+          setStepData({});
+          setCurrentStep(1);
+        } else {
+          setCurrentStep(5);
+        }
       } else {
         setUtilitySequenceIndex(nextSequenceIndex);
         setUtilityXPrev(Number.isFinite(evaluation.estimate) ? evaluation.estimate : utilityXPrev);
