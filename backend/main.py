@@ -68,7 +68,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-TIME_PRESSURE_SECONDS = 20
 UTILITY_TIME_PRESSURE_SECONDS = 15
 
 
@@ -79,12 +78,6 @@ def _raise_storage_http_error(exc: StorageError) -> None:
 
 
 def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
-    if not student_id or not student_id[-1].isdigit():
-        raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
-
-    last_digit = int(student_id[-1])
-    if last_digit % 2 == 1:
-        return "time_pressure", TIME_PRESSURE_SECONDS
     return "normal", 0
 
 

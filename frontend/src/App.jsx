@@ -21,8 +21,6 @@ export default function App() {
     utilitySequenceIndex,
     utilityXPrev,
     includeProbabilityCsv,
-    experimentMode,
-    timePressureSeconds,
     utilityExperimentMode,
     utilityTimePressureSeconds,
     loading,
@@ -78,8 +76,6 @@ export default function App() {
           trialIndex={currentTrialIndex}
           totalTrials={totalTrials}
           onNext={submitStep4}
-          experimentMode={experimentMode}
-          timePressureSeconds={timePressureSeconds}
           loading={loading}
         />
       );
