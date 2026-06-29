@@ -1,10 +1,10 @@
 export const UTILITY_DESIGN = {
   probability: 0.5,
   rAmount: 0,
-  RAmount: 100,
-  initialXPrev: 200,
+  RAmount: 2000,
+  initialXPrev: 4000,
   sequenceCount: 6,
-  increments: [20, 50, 80, 120, 180, 260, 380, 550, 800, 1150, 1650],
+  increments: [400, 1000, 1600, 2400, 3600, 5200, 7600, 11000, 16000, 23000, 33000],
 };
 
 export function buildUtilityRows(xPrev) {

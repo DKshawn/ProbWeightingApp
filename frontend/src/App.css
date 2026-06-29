@@ -384,7 +384,7 @@ body {
 .utility-row {
   display: grid;
   grid-template-columns: 58px minmax(230px, 1fr) minmax(230px, 1fr) 136px;
-  min-height: 72px;
+  min-height: 45px;
   border-top: 1px solid #e5edf6;
 }
 
@@ -403,7 +403,7 @@ body {
 .utility-row > div {
   display: flex;
   align-items: center;
-  padding: 12px;
+  padding: 5px 10px;
   border-left: 1px solid #e5edf6;
 }
 
@@ -422,7 +422,7 @@ body {
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 8px 18px;
+  gap: 4px 14px;
   line-height: 1.35;
   color: #263244;
   font-size: 0.94rem;
@@ -434,8 +434,8 @@ body {
 }
 
 .utility-choice-btn {
-  width: 48px;
-  height: 40px;
+  width: 44px;
+  height: 32px;
   border: 1.5px solid #b8c4d6;
   border-radius: 8px;
   background: #fff;
