@@ -14,6 +14,7 @@ _schema_ready = False
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_results: list[dict[str, Any]] = []
 _memory_utility_results: list[dict[str, Any]] = []
+_memory_utility_curvature_results: list[dict[str, Any]] = []
 
 
 class StorageError(RuntimeError):
@@ -128,6 +129,44 @@ def ensure_schema() -> None:
                     UNIQUE (session_id, utility_trial)
                 );
 
+                CREATE TABLE IF NOT EXISTS utility_curvature_results (
+                    id BIGSERIAL PRIMARY KEY,
+                    session_id UUID NOT NULL REFERENCES prob_sessions(session_id) ON DELETE CASCADE,
+                    student_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
+                    curvature_trial INTEGER NOT NULL,
+                    participant TEXT NOT NULL,
+                    assignment_group INTEGER,
+                    assignment_modulus INTEGER,
+                    student_id_last3 TEXT,
+                    assigned_block_id TEXT,
+                    block_id TEXT,
+                    block_title TEXT,
+                    task_id TEXT,
+                    is_anchor BOOLEAN NOT NULL DEFAULT FALSE,
+                    task_index INTEGER,
+                    task_type TEXT,
+                    task_mode TEXT,
+                    time_limit_seconds INTEGER,
+                    timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+                    time_over_seconds DOUBLE PRECISION,
+                    response_type TEXT,
+                    estimate DOUBLE PRECISION,
+                    switch_lower DOUBLE PRECISION,
+                    switch_upper DOUBLE PRECISION,
+                    switch_row INTEGER,
+                    switch_direction TEXT,
+                    switch_status TEXT,
+                    monotonic BOOLEAN,
+                    response_time_ms INTEGER,
+                    prompt TEXT,
+                    payload JSONB NOT NULL,
+                    source_timestamp TEXT,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (session_id, curvature_trial)
+                );
+
                 ALTER TABLE prob_sessions
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
@@ -179,6 +218,12 @@ def ensure_schema() -> None:
 
                 CREATE INDEX IF NOT EXISTS idx_utility_results_sequence
                     ON utility_results(sequence, row);
+
+                CREATE INDEX IF NOT EXISTS idx_utility_curvature_results_student_id
+                    ON utility_curvature_results(student_id);
+
+                CREATE INDEX IF NOT EXISTS idx_utility_curvature_results_block
+                    ON utility_curvature_results(block_id, task_index);
                 """
             )
         conn.commit()
@@ -379,6 +424,162 @@ def save_utility_results(records: list[dict[str, Any]]) -> None:
         conn.commit()
 
 
+def _none_if_blank(value: Any) -> Any:
+    return None if value == "" else value
+
+
+def _optional_int(value: Any) -> int | None:
+    value = _none_if_blank(value)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    value = _none_if_blank(value)
+    if value is None:
+        return None
+    return float(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    value = _none_if_blank(value)
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _flatten_utility_curvature_record(record: dict[str, Any], timestamp: datetime) -> dict[str, Any]:
+    payload = record.get("payload") or {}
+    estimate = (
+        payload.get("ce_estimate")
+        if payload.get("ce_estimate") is not None
+        else payload.get("estimate")
+        if payload.get("estimate") is not None
+        else payload.get("value")
+    )
+    return {
+        "session_id": record["session_id"],
+        "student_id": record["student_id"],
+        "name": record["name"],
+        "study_mode": record.get("study_mode", "full"),
+        "curvature_trial": record["curvature_trial"],
+        "participant": record.get("participant") or record["student_id"],
+        "assignment_group": _optional_int(record.get("assignment_group")),
+        "assignment_modulus": _optional_int(record.get("assignment_modulus")),
+        "student_id_last3": record.get("student_id_last3", ""),
+        "assigned_block_id": record.get("assigned_block_id", ""),
+        "block_id": record.get("block_id", ""),
+        "block_title": record.get("block_title", ""),
+        "task_id": record.get("task_id", ""),
+        "is_anchor": bool(record.get("is_anchor", False)),
+        "task_index": _optional_int(record.get("task_index")),
+        "task_type": record.get("task_type", ""),
+        "task_mode": record.get("task_mode", ""),
+        "time_limit_seconds": _optional_int(record.get("time_limit_seconds")),
+        "timed_out": bool(record.get("timed_out", False)),
+        "time_over_seconds": _optional_float(record.get("time_over_seconds")),
+        "response_type": payload.get("response_type", ""),
+        "estimate": _optional_float(estimate),
+        "switch_lower": _optional_float(payload.get("switch_lower") if payload.get("switch_lower") is not None else payload.get("final_low")),
+        "switch_upper": _optional_float(payload.get("switch_upper") if payload.get("switch_upper") is not None else payload.get("final_high")),
+        "switch_row": _optional_int(payload.get("switch_row")),
+        "switch_direction": payload.get("switch_direction", ""),
+        "switch_status": payload.get("switch_status", ""),
+        "monotonic": _optional_bool(payload.get("monotonic")),
+        "response_time_ms": _optional_int(record.get("response_time_ms")),
+        "prompt": record.get("prompt", ""),
+        "payload": payload,
+        "source_timestamp": record.get("timestamp", ""),
+        "timestamp": timestamp,
+    }
+
+
+def save_utility_curvature_results(records: list[dict[str, Any]]) -> None:
+    timestamp = datetime.now(timezone.utc)
+    flattened_records = [_flatten_utility_curvature_record(record, timestamp) for record in records]
+
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        for record in flattened_records:
+            memory_record = {**record, "Timestamp": timestamp.isoformat()}
+            existing_index = next(
+                (
+                    i
+                    for i, item in enumerate(_memory_utility_curvature_results)
+                    if (
+                        item["session_id"] == record["session_id"]
+                        and item["curvature_trial"] == record["curvature_trial"]
+                    )
+                ),
+                None,
+            )
+            if existing_index is None:
+                _memory_utility_curvature_results.append(memory_record)
+            else:
+                _memory_utility_curvature_results[existing_index] = memory_record
+        return
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO utility_curvature_results (
+                    session_id, student_id, name, study_mode, curvature_trial,
+                    participant, assignment_group, assignment_modulus, student_id_last3,
+                    assigned_block_id, block_id, block_title, task_id, is_anchor,
+                    task_index, task_type, task_mode, time_limit_seconds, timed_out,
+                    time_over_seconds, response_type, estimate, switch_lower, switch_upper,
+                    switch_row, switch_direction, switch_status, monotonic,
+                    response_time_ms, prompt, payload, source_timestamp, timestamp
+                )
+                VALUES (
+                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s, %(curvature_trial)s,
+                    %(participant)s, %(assignment_group)s, %(assignment_modulus)s, %(student_id_last3)s,
+                    %(assigned_block_id)s, %(block_id)s, %(block_title)s, %(task_id)s, %(is_anchor)s,
+                    %(task_index)s, %(task_type)s, %(task_mode)s, %(time_limit_seconds)s, %(timed_out)s,
+                    %(time_over_seconds)s, %(response_type)s, %(estimate)s, %(switch_lower)s, %(switch_upper)s,
+                    %(switch_row)s, %(switch_direction)s, %(switch_status)s, %(monotonic)s,
+                    %(response_time_ms)s, %(prompt)s, %(payload)s, %(source_timestamp)s, %(timestamp)s
+                )
+                ON CONFLICT (session_id, curvature_trial) DO UPDATE SET
+                    student_id = EXCLUDED.student_id,
+                    name = EXCLUDED.name,
+                    study_mode = EXCLUDED.study_mode,
+                    participant = EXCLUDED.participant,
+                    assignment_group = EXCLUDED.assignment_group,
+                    assignment_modulus = EXCLUDED.assignment_modulus,
+                    student_id_last3 = EXCLUDED.student_id_last3,
+                    assigned_block_id = EXCLUDED.assigned_block_id,
+                    block_id = EXCLUDED.block_id,
+                    block_title = EXCLUDED.block_title,
+                    task_id = EXCLUDED.task_id,
+                    is_anchor = EXCLUDED.is_anchor,
+                    task_index = EXCLUDED.task_index,
+                    task_type = EXCLUDED.task_type,
+                    task_mode = EXCLUDED.task_mode,
+                    time_limit_seconds = EXCLUDED.time_limit_seconds,
+                    timed_out = EXCLUDED.timed_out,
+                    time_over_seconds = EXCLUDED.time_over_seconds,
+                    response_type = EXCLUDED.response_type,
+                    estimate = EXCLUDED.estimate,
+                    switch_lower = EXCLUDED.switch_lower,
+                    switch_upper = EXCLUDED.switch_upper,
+                    switch_row = EXCLUDED.switch_row,
+                    switch_direction = EXCLUDED.switch_direction,
+                    switch_status = EXCLUDED.switch_status,
+                    monotonic = EXCLUDED.monotonic,
+                    response_time_ms = EXCLUDED.response_time_ms,
+                    prompt = EXCLUDED.prompt,
+                    payload = EXCLUDED.payload,
+                    source_timestamp = EXCLUDED.source_timestamp,
+                    timestamp = EXCLUDED.timestamp
+                """,
+                [{**record, "payload": Jsonb(record["payload"])} for record in flattened_records],
+            )
+        conn.commit()
+
+
 def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     timestamp = normalized.get("Timestamp")
@@ -481,6 +682,66 @@ def get_utility_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 FROM utility_results
                 WHERE student_id = %s
                 ORDER BY timestamp ASC, session_id ASC, utility_trial ASC
+                """,
+                (student_id,),
+            )
+            rows = cur.fetchall()
+    return [_normalize_result(row) for row in rows]
+
+
+def get_utility_curvature_results_by_student(student_id: str) -> list[dict[str, Any]]:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        return [
+            r
+            for r in sorted(
+                _memory_utility_curvature_results,
+                key=lambda item: (item.get("Timestamp", ""), item.get("session_id", ""), item.get("curvature_trial", 0)),
+            )
+            if r.get("student_id") == student_id
+        ]
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    session_id::text,
+                    student_id,
+                    name,
+                    study_mode,
+                    curvature_trial,
+                    participant,
+                    assignment_group,
+                    assignment_modulus,
+                    student_id_last3,
+                    assigned_block_id,
+                    block_id,
+                    block_title,
+                    task_id,
+                    is_anchor,
+                    task_index,
+                    task_type,
+                    task_mode,
+                    time_limit_seconds,
+                    timed_out,
+                    time_over_seconds,
+                    response_type,
+                    estimate,
+                    switch_lower,
+                    switch_upper,
+                    switch_row,
+                    switch_direction,
+                    switch_status,
+                    monotonic,
+                    response_time_ms,
+                    prompt,
+                    payload,
+                    source_timestamp,
+                    timestamp AS "Timestamp"
+                FROM utility_curvature_results
+                WHERE student_id = %s
+                ORDER BY timestamp ASC, session_id ASC, curvature_trial ASC
                 """,
                 (student_id,),
             )

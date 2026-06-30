@@ -1,5 +1,5 @@
 from pydantic import BaseModel, field_validator, model_validator
-from typing import Optional
+from typing import Any, Optional
 
 
 class SessionStartRequest(BaseModel):
@@ -224,3 +224,14 @@ class UtilityElicitationBatch(BaseModel):
                 raise ValueError(f"Utility sequence {sequence} must have at most one switch point")
 
         return self
+
+
+class UtilityCurvatureBatch(BaseModel):
+    results: list[dict[str, Any]]
+
+    @field_validator("results")
+    @classmethod
+    def validate_results(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not v:
+            raise ValueError("results must not be empty")
+        return v

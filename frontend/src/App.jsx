@@ -1,12 +1,10 @@
 import { useSession } from "./hooks/useSession";
-import SetupScreen from "./components/SetupScreen";
 import Step1Screen from "./components/Step1Screen";
 import Step2Screen from "./components/Step2Screen";
 import Step3Screen from "./components/Step3Screen";
 import Step4Screen from "./components/Step4Screen";
 import BlockBreakScreen from "./components/BlockBreakScreen";
-import UtilityIntroScreen from "./components/UtilityIntroScreen";
-import UtilityElicitationScreen from "./components/UtilityElicitationScreen";
+import UtilityCurvatureFrame from "./components/UtilityCurvatureFrame";
 import FinishScreen from "./components/FinishScreen";
 import "./App.css";
 
@@ -18,28 +16,27 @@ export default function App() {
     currentStep,
     currentTrial,
     stepData,
-    utilitySequenceIndex,
-    utilityXPrev,
-    includeProbabilityCsv,
-    utilityExperimentMode,
-    utilityTimePressureSeconds,
     loading,
     error,
-    handleSetup,
+    handleUtilityCurvatureComplete,
     submitStep1,
     submitStep2,
     submitStep3,
     submitStep4,
     startNextBlock,
-    startUtilityBlock,
-    submitUtilitySequence,
   } = useSession();
 
   const totalTrials = trials.length;
 
   switch (currentStep) {
     case 0:
-      return <SetupScreen onSetup={handleSetup} loading={loading} error={error} />;
+      return (
+        <UtilityCurvatureFrame
+          onComplete={handleUtilityCurvatureComplete}
+          loading={loading}
+          error={error}
+        />
+      );
     case 1:
       return (
         <Step1Screen
@@ -80,24 +77,9 @@ export default function App() {
         />
       );
     case 5:
-      return <FinishScreen studentId={studentId} includeProbabilityCsv={includeProbabilityCsv} />;
+      return <FinishScreen studentId={studentId} />;
     case 6:
       return <BlockBreakScreen nextTrial={currentTrial} onContinue={startNextBlock} />;
-    case 7:
-      return <UtilityIntroScreen onContinue={startUtilityBlock} />;
-    case 8:
-      return (
-        <UtilityElicitationScreen
-          key={utilitySequenceIndex}
-          sequenceIndex={utilitySequenceIndex}
-          xPrev={utilityXPrev}
-          onSubmit={submitUtilitySequence}
-          experimentMode={utilityExperimentMode}
-          timePressureSeconds={utilityTimePressureSeconds}
-          loading={loading}
-          error={error}
-        />
-      );
     default:
       return null;
   }

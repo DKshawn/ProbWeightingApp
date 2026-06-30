@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { getCsvUrl, getUtilityCsvUrl } from "../api/client";
+import { getCsvUrl, getUtilityCurvatureCsvUrl } from "../api/client";
 
-export default function FinishScreen({ studentId, includeProbabilityCsv = true }) {
+export default function FinishScreen({ studentId }) {
   const [saving, setSaving] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const csvUrl = getCsvUrl(studentId);
-  const utilityCsvUrl = getUtilityCsvUrl(studentId);
+  const utilityCurvatureCsvUrl = getUtilityCurvatureCsvUrl(studentId);
 
   function buildTimestamp() {
     const now = new Date();
@@ -39,17 +39,13 @@ export default function FinishScreen({ studentId, includeProbabilityCsv = true }
   async function saveCsvFiles() {
     const timestamp = buildTimestamp();
     const files = [
-      ...(includeProbabilityCsv
-        ? [
-            {
-              url: csvUrl,
-              name: `ProbWeighting_${studentId}_${timestamp}.csv`,
-            },
-          ]
-        : []),
       {
-        url: utilityCsvUrl,
-        name: `UtilityElicitation_${studentId}_${timestamp}.csv`,
+        url: csvUrl,
+        name: `ProbWeighting_${studentId}_${timestamp}.csv`,
+      },
+      {
+        url: utilityCurvatureCsvUrl,
+        name: `UtilityCurvature_${studentId}_${timestamp}.csv`,
       },
     ];
 

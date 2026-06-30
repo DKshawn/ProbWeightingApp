@@ -487,6 +487,30 @@ body {
   font-weight: 600;
 }
 
+.utility-curvature-host {
+  position: relative;
+  min-height: 100vh;
+  background: #f5f7fa;
+}
+
+.utility-curvature-frame {
+  width: 100%;
+  min-height: 100vh;
+  border: 0;
+  display: block;
+}
+
+.utility-curvature-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(245, 247, 250, 0.86);
+}
+
 @media (max-width: 760px) {
   .utility-screen {
     padding-inline: 12px;

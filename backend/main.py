@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import uuid
 from datetime import datetime
@@ -9,30 +10,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 try:
-    from .models.result import SessionStartRequest, TrialResult, UtilityElicitationBatch
+    from .models.result import SessionStartRequest, TrialResult, UtilityCurvatureBatch, UtilityElicitationBatch
     from .storage import (
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        get_utility_curvature_results_by_student,
         get_utility_results_by_student,
         get_results_by_student,
         get_summary as get_storage_summary,
         save_result as save_result_record,
+        save_utility_curvature_results as save_utility_curvature_result_records,
         save_utility_results as save_utility_result_records,
         session_exists,
         storage_mode,
     )
     from .trial_generator import generate_all_trials
 except ImportError:
-    from models.result import SessionStartRequest, TrialResult, UtilityElicitationBatch
+    from models.result import SessionStartRequest, TrialResult, UtilityCurvatureBatch, UtilityElicitationBatch
     from storage import (
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        get_utility_curvature_results_by_student,
         get_utility_results_by_student,
         get_results_by_student,
         get_summary as get_storage_summary,
         save_result as save_result_record,
+        save_utility_curvature_results as save_utility_curvature_result_records,
         save_utility_results as save_utility_result_records,
         session_exists,
         storage_mode,
@@ -173,6 +178,32 @@ def save_utility_results(batch: UtilityElicitationBatch):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/utility-curvature-results
+# ---------------------------------------------------------------------------
+@app.post("/api/utility-curvature-results")
+def save_utility_curvature_results(batch: UtilityCurvatureBatch):
+    session_ids = {result.get("session_id") for result in batch.results}
+    if len(session_ids) != 1 or None in session_ids:
+        raise HTTPException(status_code=400, detail="同じセッションの結果だけを送信してください")
+
+    session_id = next(iter(session_ids))
+    try:
+        exists = session_exists(session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not exists:
+        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+    try:
+        save_utility_curvature_result_records(batch.results)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "saved": len(batch.results)}
+
+
+# ---------------------------------------------------------------------------
 # GET /api/results/{student_id}/csv
 # ---------------------------------------------------------------------------
 CSV_COLUMNS = [
@@ -245,6 +276,53 @@ UTILITY_FIELD_MAP = {
     "Timestamp": "Timestamp",
 }
 
+UTILITY_CURVATURE_CSV_COLUMNS = [
+    "session_id", "StudentID", "Name", "study_mode", "curvature_trial",
+    "participant", "assignment_group", "assignment_modulus", "student_id_last3",
+    "assigned_block_id", "block_id", "block_title", "task_id", "is_anchor",
+    "task_index", "task_type", "task_mode", "time_limit_seconds", "timed_out",
+    "time_over_seconds", "response_type", "estimate", "switch_lower",
+    "switch_upper", "switch_row", "switch_direction", "switch_status",
+    "monotonic", "response_time_ms", "prompt", "source_timestamp",
+    "payload_json", "Timestamp",
+]
+
+UTILITY_CURVATURE_FIELD_MAP = {
+    "session_id": "session_id",
+    "StudentID": "student_id",
+    "Name": "name",
+    "study_mode": "study_mode",
+    "curvature_trial": "curvature_trial",
+    "participant": "participant",
+    "assignment_group": "assignment_group",
+    "assignment_modulus": "assignment_modulus",
+    "student_id_last3": "student_id_last3",
+    "assigned_block_id": "assigned_block_id",
+    "block_id": "block_id",
+    "block_title": "block_title",
+    "task_id": "task_id",
+    "is_anchor": "is_anchor",
+    "task_index": "task_index",
+    "task_type": "task_type",
+    "task_mode": "task_mode",
+    "time_limit_seconds": "time_limit_seconds",
+    "timed_out": "timed_out",
+    "time_over_seconds": "time_over_seconds",
+    "response_type": "response_type",
+    "estimate": "estimate",
+    "switch_lower": "switch_lower",
+    "switch_upper": "switch_upper",
+    "switch_row": "switch_row",
+    "switch_direction": "switch_direction",
+    "switch_status": "switch_status",
+    "monotonic": "monotonic",
+    "response_time_ms": "response_time_ms",
+    "prompt": "prompt",
+    "source_timestamp": "source_timestamp",
+    "payload_json": "payload",
+    "Timestamp": "Timestamp",
+}
+
 
 @app.get("/api/results/{student_id}/csv")
 def download_csv(student_id: str):
@@ -292,6 +370,35 @@ def download_utility_csv(student_id: str):
     writer.writeheader()
     for r in student_results:
         row = {col: r.get(UTILITY_FIELD_MAP[col], "") for col in UTILITY_CSV_COLUMNS}
+        writer.writerow(row)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/utility-curvature-results/{student_id}/csv")
+def download_utility_curvature_csv(student_id: str):
+    try:
+        student_results = get_utility_curvature_results_by_student(student_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not student_results:
+        raise HTTPException(status_code=404, detail="該当する utility curvature 結果が見つかりません")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"UtilityCurvature_{student_id}_{timestamp}.csv"
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=UTILITY_CURVATURE_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for r in student_results:
+        row = {col: r.get(UTILITY_CURVATURE_FIELD_MAP[col], "") for col in UTILITY_CURVATURE_CSV_COLUMNS}
+        row["payload_json"] = json.dumps(row["payload_json"], ensure_ascii=False, separators=(",", ":"))
         writer.writerow(row)
 
     output.seek(0)
