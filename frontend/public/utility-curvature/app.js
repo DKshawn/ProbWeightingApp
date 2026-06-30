@@ -385,7 +385,7 @@ function renderBlockIntro() {
     state.phase = "practice";
     state.taskIndex = 0;
     state.runtime = null;
-    state.taskModes = createTaskModes(block.tasks.length);
+    state.taskModes = createTaskModes(block.tasks);
     state.taskTimedOut = false;
     state.blockStartedAt = Date.now();
     state.taskStartedAt = Date.now();
@@ -460,18 +460,23 @@ function startFormalTasks() {
   render();
 }
 
-function createTaskModes(taskCount) {
+function createTaskModes(tasks) {
+  const taskCount = tasks.length;
   const modes = Array.from({ length: taskCount }, () => MODE_NORMAL);
-  if (taskCount <= 1) return modes;
+  const eligibleIndexes = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task, index }) => index > 0 && !task.isAnchor)
+    .map(({ index }) => index);
+  if (!eligibleIndexes.length) return modes;
   const timePressureIndexes = [];
-  for (let index = 1; index < taskCount; index += 1) {
+  eligibleIndexes.forEach((index) => {
     if (Math.random() < 0.5) {
       modes[index] = MODE_TIME_PRESSURE;
       timePressureIndexes.push(index);
     }
-  }
+  });
   if (!timePressureIndexes.length) {
-    const fallbackIndex = 1 + Math.floor(Math.random() * (taskCount - 1));
+    const fallbackIndex = eligibleIndexes[Math.floor(Math.random() * eligibleIndexes.length)];
     modes[fallbackIndex] = MODE_TIME_PRESSURE;
   }
   return modes;
@@ -479,6 +484,7 @@ function createTaskModes(taskCount) {
 
 function currentTaskMode() {
   if (state.phase !== "task") return MODE_NORMAL;
+  if (currentTask()?.isAnchor) return MODE_NORMAL;
   return state.taskModes[state.taskIndex] ?? MODE_NORMAL;
 }
 
@@ -1315,7 +1321,7 @@ function runSmokeTest() {
     state.blockIndex = blockIndex;
     state.participant = String(9999000 + blockIndex);
     state.assignment = assignBlockFromStudentId(state.participant);
-    state.taskModes = createTaskModes(block.tasks.length);
+    state.taskModes = createTaskModes(block.tasks);
     block.tasks.forEach((task, taskIndex) => {
       state.taskIndex = taskIndex;
       state.taskStartedAt = Date.now();
@@ -1341,10 +1347,15 @@ function runSmokeTest() {
   });
   BLOCKS.forEach((block) => {
     const blockRecords = state.records.filter((record) => record.block_id === block.id);
+    const nonAnchorRecords = blockRecords.filter((record) => !record.is_anchor);
+    const anchorRecords = blockRecords.filter((record) => record.is_anchor);
     const firstRecord = blockRecords[0];
     if (firstRecord?.task_mode !== MODE_NORMAL) failures.push(`${block.title} first task mode should be normal`);
-    if (!blockRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE)) {
+    if (!nonAnchorRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE)) {
       failures.push(`${block.title} missing time pressure task`);
+    }
+    if (anchorRecords.some((record) => record.task_mode !== MODE_NORMAL)) {
+      failures.push(`${block.title} anchor task should be normal`);
     }
     if (blockRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.time_limit_seconds !== TIME_PRESSURE_SECONDS)) {
       failures.push(`${block.title} time pressure limit is not ${TIME_PRESSURE_SECONDS}`);
