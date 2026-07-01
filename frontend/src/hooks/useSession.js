@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { saveResult, saveUtilityCurvatureResults, startSession } from "../api/client";
 
 function getStudyModeFromUrl() {
@@ -22,52 +22,154 @@ export function useSession() {
   const [stepData, setStepData] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const pendingOperationsRef = useRef(0);
+  const utilitySessionRef = useRef(null);
+  const utilitySessionPromiseRef = useRef(null);
+  const utilitySaveQueueRef = useRef(Promise.resolve());
+  const utilitySaveFailedRef = useRef(false);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
   const totalTrials = trials.length;
 
-  async function handleUtilityCurvatureComplete(message) {
-    const sid = String(message?.participant ?? "").trim();
-    const utilityRecords = Array.isArray(message?.records) ? message.records : [];
+  function beginOperation() {
+    pendingOperationsRef.current += 1;
+    setLoading(true);
+  }
 
+  function endOperation() {
+    pendingOperationsRef.current = Math.max(0, pendingOperationsRef.current - 1);
+    if (pendingOperationsRef.current === 0) {
+      setLoading(false);
+    }
+  }
+
+  function extractUtilityStudentId(message) {
+    const sid = String(message?.participant ?? "").trim();
     if (!sid) {
-      setError("学籍番号を取得できませんでした");
-      return;
+      throw new Error("学籍番号を取得できませんでした");
+    }
+    return sid;
+  }
+
+  async function ensureUtilityCurvatureSession(message) {
+    const sid = extractUtilityStudentId(message);
+    const currentSession = utilitySessionRef.current;
+    if (currentSession?.studentId === sid) return currentSession;
+
+    const currentPromise = utilitySessionPromiseRef.current;
+    if (currentPromise?.studentId === sid) return currentPromise.promise;
+
+    utilitySaveQueueRef.current = Promise.resolve();
+    utilitySaveFailedRef.current = false;
+
+    const sessionName = sid;
+    const requestedStudyMode = getStudyModeFromUrl();
+    const promise = startSession(sid, sessionName, requestedStudyMode)
+      .then((data) => {
+        const resolvedStudyMode = data.study_mode || requestedStudyMode;
+        const session = {
+          sessionId: data.session_id,
+          studentId: sid,
+          name: sessionName,
+          studyMode: resolvedStudyMode,
+          trials: data.trials,
+          experimentMode: data.experiment_mode || "normal",
+          timePressureSeconds: data.time_pressure_seconds || 0,
+        };
+
+        utilitySessionRef.current = session;
+        setSessionId(session.sessionId);
+        setTrials(session.trials);
+        setStudentId(session.studentId);
+        setName(session.name);
+        setStudyMode(session.studyMode);
+        setExperimentMode(session.experimentMode);
+        setTimePressureSeconds(session.timePressureSeconds);
+        setCurrentTrialIndex(0);
+        setStepData({});
+        return session;
+      })
+      .finally(() => {
+        if (utilitySessionPromiseRef.current?.promise === promise) {
+          utilitySessionPromiseRef.current = null;
+        }
+      });
+
+    utilitySessionPromiseRef.current = { studentId: sid, promise };
+    return promise;
+  }
+
+  function buildUtilityCurvatureRecord(message, session) {
+    const record = message?.record;
+    if (!record || typeof record !== "object") {
+      throw new Error("Utility curvature の記録を取得できませんでした");
     }
 
-    setLoading(true);
+    const curvatureTrial = Number(record.curvature_trial ?? message?.curvature_trial);
+    if (!Number.isFinite(curvatureTrial) || curvatureTrial < 1) {
+      throw new Error("Utility curvature の試行番号を取得できませんでした");
+    }
+
+    return {
+      ...record,
+      session_id: session.sessionId,
+      student_id: session.studentId,
+      name: session.name,
+      study_mode: session.studyMode,
+      curvature_trial: curvatureTrial,
+    };
+  }
+
+  function enqueueUtilityCurvatureRecordSave(message) {
+    const saveTask = utilitySaveQueueRef.current.then(async () => {
+      const session = await ensureUtilityCurvatureSession(message);
+      const record = buildUtilityCurvatureRecord(message, session);
+      await saveUtilityCurvatureResults([record]);
+    });
+
+    utilitySaveQueueRef.current = saveTask.catch(() => {});
+    return saveTask;
+  }
+
+  async function handleUtilityCurvatureStart(message) {
+    beginOperation();
     setError(null);
     try {
-      const sessionName = sid;
-      const requestedStudyMode = getStudyModeFromUrl();
-      const data = await startSession(sid, sessionName, requestedStudyMode);
-      const resolvedStudyMode = data.study_mode || requestedStudyMode;
+      await ensureUtilityCurvatureSession(message);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      endOperation();
+    }
+  }
 
-      const records = utilityRecords.map((record, index) => ({
-        ...record,
-        session_id: data.session_id,
-        student_id: sid,
-        name: sessionName,
-        study_mode: resolvedStudyMode,
-        curvature_trial: index + 1,
-      }));
+  async function handleUtilityCurvatureRecord(message) {
+    beginOperation();
+    setError(null);
+    try {
+      await enqueueUtilityCurvatureRecordSave(message);
+    } catch (e) {
+      utilitySaveFailedRef.current = true;
+      setError(e.message);
+    } finally {
+      endOperation();
+    }
+  }
 
-      await saveUtilityCurvatureResults(records);
-
-      setSessionId(data.session_id);
-      setTrials(data.trials);
-      setStudentId(sid);
-      setName(sessionName);
-      setStudyMode(resolvedStudyMode);
-      setExperimentMode(data.experiment_mode || "normal");
-      setTimePressureSeconds(data.time_pressure_seconds || 0);
-      setCurrentTrialIndex(0);
-      setStepData({});
+  async function handleUtilityCurvatureComplete(message) {
+    beginOperation();
+    setError(null);
+    try {
+      await ensureUtilityCurvatureSession(message);
+      await utilitySaveQueueRef.current;
+      if (utilitySaveFailedRef.current) {
+        throw new Error("Utility curvature 結果の保存に失敗しました");
+      }
       setCurrentStep(1);
     } catch (e) {
       setError(e.message);
     } finally {
-      setLoading(false);
+      endOperation();
     }
   }
 
@@ -162,6 +264,8 @@ export function useSession() {
     stepData,
     loading,
     error,
+    handleUtilityCurvatureStart,
+    handleUtilityCurvatureRecord,
     handleUtilityCurvatureComplete,
     submitStep1,
     submitStep2,

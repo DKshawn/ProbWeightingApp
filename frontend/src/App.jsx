@@ -18,6 +18,8 @@ export default function App() {
     stepData,
     loading,
     error,
+    handleUtilityCurvatureStart,
+    handleUtilityCurvatureRecord,
     handleUtilityCurvatureComplete,
     submitStep1,
     submitStep2,
@@ -32,6 +34,8 @@ export default function App() {
     case 0:
       return (
         <UtilityCurvatureFrame
+          onStart={handleUtilityCurvatureStart}
+          onRecord={handleUtilityCurvatureRecord}
           onComplete={handleUtilityCurvatureComplete}
           loading={loading}
           error={error}

@@ -5,13 +5,14 @@ const TIME_PRESSURE_SECONDS = 20;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const EMBEDDED_MODE = new URLSearchParams(window.location.search).get("embedded") === "1";
+const TANAKA_SERIES_3_GAIN_OFFSET = 21;
 
 const BLOCKS = [
   {
     id: "tanaka-camerer-nguyen-2010",
     title: "Tanaka, Camerer & Nguyen (2010)",
     label: "3系列 + 共通2問",
-    method: "switching-point estimation of sigma, alpha, lambda",
+    method: "switching-point estimation with gain-only Tanaka-style series",
     intro:
       "各くじでは、1から10までの数字が書かれた10個の玉から1個を無作為に引きます。引いた玉の数字に対応する金額が、そのくじの結果になります。最後に全員共通の2問があります。",
     assumptions:
@@ -38,7 +39,7 @@ const BLOCKS = [
       createTanakaSeriesTask(
         "tanaka-series-3",
         "シリーズ 3",
-        "利得と損失が混ざるくじです。どの行からBを選ぶかをクリックしてください。",
+        "すべての結果が0円以上になるように調整したくじです。どの行からBを選ぶかをクリックしてください。",
         [
           [25, -4, 30, -21],
           [4, -4, 30, -21],
@@ -47,9 +48,9 @@ const BLOCKS = [
           [1, -8, 30, -16],
           [1, -8, 30, -14],
           [1, -8, 30, -11],
-        ].map(([aGain, aLoss, bGain, bLoss]) => ({
-          optionA: `①②③④⑤: ${formatYen(tanakaYen(aGain))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(aLoss))}`,
-          optionB: `①②③④⑤: ${formatYen(tanakaYen(bGain))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(bLoss))}`,
+        ].map(([aHigh, aLow, bHigh, bLow]) => ({
+          optionA: `①②③④⑤: ${formatYen(tanakaYen(aHigh + TANAKA_SERIES_3_GAIN_OFFSET))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(aLow + TANAKA_SERIES_3_GAIN_OFFSET))}`,
+          optionB: `①②③④⑤: ${formatYen(tanakaYen(bHigh + TANAKA_SERIES_3_GAIN_OFFSET))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(bLow + TANAKA_SERIES_3_GAIN_OFFSET))}`,
         }))
       ),
     ]),
@@ -299,6 +300,11 @@ function saveState() {
   }));
 }
 
+function postEmbeddedMessage(message) {
+  if (!EMBEDDED_MODE || !window.parent || window.parent === window) return;
+  window.parent.postMessage(message, window.location.origin);
+}
+
 function render() {
   clearTaskTimer();
   if (state.phase === "setup") return renderSetup();
@@ -362,6 +368,11 @@ function renderSetup() {
     state.csvDownloaded = false;
     state.error = "";
     saveState();
+    postEmbeddedMessage({
+      type: "utility-curvature-start",
+      participant: state.participant,
+      assignment: state.assignment,
+    });
     render();
   });
 }
@@ -1054,7 +1065,8 @@ function midpoint(a, b) {
 function recordTask(block, task, payload) {
   const taskMode = currentTaskMode();
   const timeOverSeconds = taskMode === MODE_TIME_PRESSURE ? exceededTaskSeconds() : "";
-  state.records.push({
+  const record = {
+    curvature_trial: state.records.length + 1,
     participant: state.participant,
     assignment_group: state.assignment?.groupNumber ?? "",
     assignment_modulus: state.assignment?.modulus ?? "",
@@ -1074,9 +1086,16 @@ function recordTask(block, task, payload) {
     payload,
     response_time_ms: state.taskStartedAt ? Date.now() - state.taskStartedAt : null,
     timestamp: new Date().toISOString(),
-  });
+  };
+  state.records.push(record);
   state.error = "";
   saveState();
+  postEmbeddedMessage({
+    type: "utility-curvature-record",
+    participant: state.participant,
+    assignment: state.assignment,
+    record,
+  });
 }
 
 function nextTask() {
@@ -1112,13 +1131,13 @@ function renderFinish() {
   if (!state.csvDownloaded) {
     state.csvDownloaded = true;
     saveState();
-    if (EMBEDDED_MODE && window.parent && window.parent !== window) {
-      window.parent.postMessage({
+    if (EMBEDDED_MODE) {
+      postEmbeddedMessage({
         type: "utility-curvature-complete",
         participant: state.participant,
         assignment: state.assignment,
-        records: state.records,
-      }, window.location.origin);
+        record_count: state.records.length,
+      });
     } else {
       downloadCsv(csvFilename(), state.records);
     }

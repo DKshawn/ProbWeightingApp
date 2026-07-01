@@ -1,11 +1,19 @@
 import { useEffect, useRef } from "react";
 
-export default function UtilityCurvatureFrame({ onComplete, loading, error }) {
+export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, loading, error }) {
   const completedRef = useRef(false);
 
   useEffect(() => {
     function handleMessage(event) {
       if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "utility-curvature-start") {
+        onStart(event.data);
+        return;
+      }
+      if (event.data?.type === "utility-curvature-record") {
+        onRecord(event.data);
+        return;
+      }
       if (event.data?.type !== "utility-curvature-complete") return;
       if (completedRef.current) return;
 
@@ -15,7 +23,7 @@ export default function UtilityCurvatureFrame({ onComplete, loading, error }) {
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [onComplete]);
+  }, [onStart, onRecord, onComplete]);
 
   return (
     <div className="utility-curvature-host">
