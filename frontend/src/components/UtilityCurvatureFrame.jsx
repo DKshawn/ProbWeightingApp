@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, loading, error }) {
   const completedRef = useRef(false);
+  const utilityCurvatureSrc = buildUtilityCurvatureSrc();
 
   useEffect(() => {
     function handleMessage(event) {
@@ -29,7 +30,7 @@ export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, l
     <div className="utility-curvature-host">
       <iframe
         title="Utility curvature block"
-        src="/utility-curvature/index.html?embedded=1"
+        src={utilityCurvatureSrc}
         className="utility-curvature-frame"
       />
       {(loading || error) && (
@@ -40,4 +41,15 @@ export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, l
       )}
     </div>
   );
+}
+
+function buildUtilityCurvatureSrc() {
+  const sourceParams = new URLSearchParams(window.location.search);
+  const targetParams = new URLSearchParams({ embedded: "1" });
+  const isPilot =
+    sourceParams.get("mode") === "pilot" ||
+    sourceParams.get("study_mode") === "pilot" ||
+    sourceParams.get("pilot") === "1";
+  if (isPilot) targetParams.set("mode", "pilot");
+  return `/utility-curvature/index.html?${targetParams.toString()}`;
 }

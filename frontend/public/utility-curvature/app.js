@@ -4,19 +4,22 @@ const ASSIGNMENT_MODULUS = 5;
 const TIME_PRESSURE_SECONDS = 20;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
-const EMBEDDED_MODE = new URLSearchParams(window.location.search).get("embedded") === "1";
-const TANAKA_SERIES_3_GAIN_OFFSET = 21;
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
+const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
+const BOOIJ_GAIN_BASELINE = 10000;
+const ABDELLAOUI_PWF_BASELINE = 1000;
 
 const BLOCKS = [
   {
     id: "tanaka-camerer-nguyen-2010",
     title: "Tanaka, Camerer & Nguyen (2010)",
-    label: "3系列 + 共通2問",
-    method: "switching-point estimation with gain-only Tanaka-style series",
+    label: "2系列 + 共通2問",
+    method: "gain-domain structural estimation of sigma and eta",
     intro:
-      "各くじでは、1から10までの数字が書かれた10個の玉から1個を無作為に引きます。引いた玉の数字に対応する金額が、そのくじの結果になります。最後に全員共通の2問があります。",
+      "各くじでは、1から10までの数字が書かれた10個の玉から1個を無作為に引きます。引いた玉の数字に対応する金額が、そのくじの結果になります。この正式版では利得領域の2系列だけを使います。最後に全員共通の2問があります。",
     assumptions:
-      "Table 2 の構造を日本円表示に置き換えています。1つの系列につき、切り替える行を1回クリックして回答します。",
+      "Table 2 の Series 1 と Series 2 の構造を日本円表示に置き換えています。1つの系列につき、切り替える行を1回クリックして回答します。",
     tasks: withCommonAnchors([
       createTanakaSeriesTask(
         "tanaka-series-1",
@@ -34,23 +37,6 @@ const BLOCKS = [
         [54, 56, 58, 60, 62, 65, 68, 72, 77, 83, 90, 100, 110, 130].map((bHigh) => ({
           optionA: `①②③④⑤⑥⑦⑧⑨: ${formatYen(tanakaYen(40))}、⑩: ${formatYen(tanakaYen(30))}`,
           optionB: `①②③④⑤⑥⑦: ${formatYen(tanakaYen(bHigh))}、⑧⑨⑩: ${formatYen(tanakaYen(5))}`,
-        }))
-      ),
-      createTanakaSeriesTask(
-        "tanaka-series-3",
-        "シリーズ 3",
-        "すべての結果が0円以上になるように調整したくじです。どの行からBを選ぶかをクリックしてください。",
-        [
-          [25, -4, 30, -21],
-          [4, -4, 30, -21],
-          [1, -4, 30, -21],
-          [1, -4, 30, -16],
-          [1, -8, 30, -16],
-          [1, -8, 30, -14],
-          [1, -8, 30, -11],
-        ].map(([aHigh, aLow, bHigh, bLow]) => ({
-          optionA: `①②③④⑤: ${formatYen(tanakaYen(aHigh + TANAKA_SERIES_3_GAIN_OFFSET))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(aLow + TANAKA_SERIES_3_GAIN_OFFSET))}`,
-          optionB: `①②③④⑤: ${formatYen(tanakaYen(bHigh + TANAKA_SERIES_3_GAIN_OFFSET))}、⑥⑦⑧⑨⑩: ${formatYen(tanakaYen(bLow + TANAKA_SERIES_3_GAIN_OFFSET))}`,
         }))
       ),
     ]),
@@ -78,12 +64,12 @@ const BLOCKS = [
   {
     id: "abdellaoui-2000",
     title: "Abdellaoui (2000)",
-    label: "8問 + 共通2問",
-    method: "parameter-free utility standard sequence",
+    label: "8問 + PWF 5問 + 共通2問",
+    method: "utility bisection + gain-domain probability bisection",
     intro:
-      "このブロックでは、段階的な比較によって、2つのくじが同じくらい魅力的になる金額を探します。最後に全員共通の2問があります。",
+      "このブロックでは、段階的な比較によって、2つのくじが同じくらい魅力的になる金額を探します。その後、利得領域の確率加重を測るための確率比較を行います。最後に全員共通の2問があります。",
     assumptions:
-      "各問題は5回の比較で終了します。金額はすべて日本円表示です。",
+      "金額比較は5回、確率比較は6回の比較で終了します。金額はすべて日本円表示です。",
     tasks: withCommonAnchors([
       createBisectionTask("abdellaoui-1", "2/3", "1/3", 1000, 500, 0, 1000, 6000),
       createBisectionTask("abdellaoui-2", "2/3", "1/3", 2000, 1000, 0, 2000, 8000),
@@ -93,15 +79,20 @@ const BLOCKS = [
       createBisectionTask("abdellaoui-6", "1/3", "2/3", 8000, 2000, 0, 8000, 20000),
       createBisectionTask("abdellaoui-7", "3/4", "1/4", 3000, 1000, 0, 3000, 9000),
       createBisectionTask("abdellaoui-8", "1/4", "3/4", 10000, 2000, 0, 10000, 26000),
+      createProbabilityBisectionTask("abdellaoui-p1", "abdellaoui-1", "abdellaoui-6", 1 / 6),
+      createProbabilityBisectionTask("abdellaoui-p2", "abdellaoui-2", "abdellaoui-6", 2 / 6),
+      createProbabilityBisectionTask("abdellaoui-p3", "abdellaoui-3", "abdellaoui-6", 3 / 6),
+      createProbabilityBisectionTask("abdellaoui-p4", "abdellaoui-4", "abdellaoui-6", 4 / 6),
+      createProbabilityBisectionTask("abdellaoui-p5", "abdellaoui-5", "abdellaoui-6", 5 / 6),
     ]),
   },
   {
     id: "booij-2010",
     title: "Booij et al. (2010)",
-    label: "10問 + 共通2問",
+    label: "6問 + PWF 5問 + 共通2問",
     method: "chained outcome matching + parametric utility",
     intro:
-      "このブロックでは、2つのくじが同じくらい魅力的になるように、欠けている金額を入力します。最後に全員共通の2問があります。",
+      "このブロックでは、2つのくじが同じくらい魅力的になるように、欠けている金額を入力します。その後、利得領域の確率加重を測るために欠けている確率を入力します。最後に全員共通の2問があります。",
     assumptions:
       "一部の問題では、前の問題で入力した値を次の問題に代入します。金額はすべて日本円表示です。",
     tasks: withCommonAnchors([
@@ -109,21 +100,22 @@ const BLOCKS = [
       createInputMatchTask("booij-x2", "x2", "x2 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x2、50%の確率で x1", `50%の確率で ${formatYen(10000)}、50%の確率で ${formatYen(6400)}`, 0, 50000),
       createInputMatchTask("booij-x3", "x3", "x3 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x3、50%の確率で x2", `50%の確率で ${formatYen(10000)}、50%の確率で ${formatYen(6400)}`, 0, 70000),
       createInputMatchTask("booij-x4", "x4", "x4 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x4、50%の確率で x3", `50%の確率で ${formatYen(10000)}、50%の確率で ${formatYen(6400)}`, 0, 90000),
-      createInputMatchTask("booij-x5", "x5", "x5 を入力して、低確率の利得を含む2つのくじが同じくらい魅力的になるようにしてください。", `25%の確率で x5、75%の確率で ${formatYen(0)}`, `25%の確率で ${formatYen(12000)}、75%の確率で ${formatYen(3000)}`, 0, 50000),
-      createInputMatchTask("booij-x6", "x6", "x6 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "25%の確率で x6、75%の確率で x5", `25%の確率で ${formatYen(12000)}、75%の確率で ${formatYen(3000)}`, 0, 70000),
-      createInputMatchTask("booij-x7", "x7", "x7 を入力して、高確率の利得を含む2つのくじが同じくらい魅力的になるようにしてください。", `75%の確率で x7、25%の確率で ${formatYen(1000)}`, `75%の確率で ${formatYen(8000)}、25%の確率で ${formatYen(4000)}`, 0, 50000),
-      createInputMatchTask("booij-x8", "x8", "x8 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "75%の確率で x8、25%の確率で x7", `75%の確率で ${formatYen(8000)}、25%の確率で ${formatYen(4000)}`, 0, 70000),
-      createInputMatchTask("booij-x9", "x9", "x9 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", `50%の確率で x9、50%の確率で ${formatYen(2000)}`, `50%の確率で ${formatYen(16000)}、50%の確率で ${formatYen(8000)}`, 0, 80000),
-      createInputMatchTask("booij-x10", "x10", "x10 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x10、50%の確率で x9", `50%の確率で ${formatYen(16000)}、50%の確率で ${formatYen(8000)}`, 0, 100000),
+      createInputMatchTask("booij-x5", "x5", "x5 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x5、50%の確率で x4", `50%の確率で ${formatYen(10000)}、50%の確率で ${formatYen(6400)}`, 0, 110000),
+      createInputMatchTask("booij-x6", "x6", "x6 を入力して、2つのくじが同じくらい魅力的になるようにしてください。", "50%の確率で x6、50%の確率で x5", `50%の確率で ${formatYen(10000)}、50%の確率で ${formatYen(6400)}`, 0, 130000),
+      createProbabilityMatchTask("booij-p1", "p1", "x1", "x6", BOOIJ_GAIN_BASELINE, 1 / 6),
+      createProbabilityMatchTask("booij-p2", "p2", "x2", "x6", BOOIJ_GAIN_BASELINE, 2 / 6),
+      createProbabilityMatchTask("booij-p3", "p3", "x3", "x6", BOOIJ_GAIN_BASELINE, 3 / 6),
+      createProbabilityMatchTask("booij-p4", "p4", "x4", "x6", BOOIJ_GAIN_BASELINE, 4 / 6),
+      createProbabilityMatchTask("booij-p5", "p5", "x5", "x6", BOOIJ_GAIN_BASELINE, 5 / 6),
     ]),
   },
   {
     id: "bruhin-2010",
     title: "Bruhin et al. (2010)",
-    label: "10表 + 共通2問",
+    label: "9表 + 共通2問",
     method: "finite mixture structural estimation",
     intro:
-      "このブロックでは、くじと確実な金額を比べる10枚の表に回答します。最後に全員共通の2問があります。",
+      "このブロックでは、くじと確実な金額を比べる9枚の表に回答します。最後に全員共通の2問があります。",
     assumptions:
       "各表は20行です。切り替える行を1回クリックすると、上下の行が自動入力されます。",
     tasks: withCommonAnchors([
@@ -134,7 +126,6 @@ const BLOCKS = [
       createMplTask(lotteryText(90, 1500, 10, 0), "確実な金額", "JPY", range(1500, 0, 20), "JPY", { taskId: "bruhin-sheet-5" }),
       createMplTask(lotteryText(50, 5000, 50, 1000), "確実な金額", "JPY", range(5000, 1000, 20), "JPY", { taskId: "bruhin-sheet-6" }),
       createMplTask(lotteryText(20, 8000, 80, 500), "確実な金額", "JPY", range(8000, 500, 20), "JPY", { taskId: "bruhin-sheet-7" }),
-      createMplTask(lotteryText(80, 3000, 20, -1000), "確実な金額", "JPY", range(3000, -1000, 20), "JPY", { taskId: "bruhin-sheet-8" }),
       createMplTask(lotteryText(33, 6000, 67, 0), "確実な金額", "JPY", range(6000, 0, 20), "JPY", { taskId: "bruhin-sheet-9" }),
       createMplTask(lotteryText(67, 2500, 33, 0), "確実な金額", "JPY", range(2500, 0, 20), "JPY", { taskId: "bruhin-sheet-10" }),
     ]),
@@ -261,6 +252,40 @@ function createInputMatchTask(taskId, unknown, prompt, optionA, optionB, min, ma
   };
 }
 
+function createProbabilityMatchTask(taskId, unknown, sureSymbol, highSymbol, baselineAmount, nominalWeightTarget) {
+  return {
+    taskId,
+    isAnchor: false,
+    type: "probabilityMatch",
+    prompt: `${unknown} を入力して、確実な金額とくじが同じくらい魅力的になるようにしてください。`,
+    unknown,
+    sureSymbol,
+    highSymbol,
+    baselineAmount,
+    nominalWeightTarget,
+    unit: "%",
+    min: 1,
+    max: 99,
+  };
+}
+
+function createProbabilityBisectionTask(taskId, sureTaskId, highTaskId, nominalWeightTarget) {
+  return {
+    taskId,
+    isAnchor: false,
+    type: "probabilityBisection",
+    prompt: "確実な金額とくじを比べて、より好ましい選択肢を選んでください。選択に応じて次の候補確率が自動で変わります。",
+    sureTaskId,
+    highTaskId,
+    baselineAmount: ABDELLAOUI_PWF_BASELINE,
+    nominalWeightTarget,
+    unit: "%",
+    low: 0.01,
+    high: 0.99,
+    rounds: 6,
+  };
+}
+
 function lotteryText(firstProbability, firstAmount, secondProbability, secondAmount) {
   return `${firstProbability}%の確率で ${formatYen(firstAmount)}、${secondProbability}%の確率で ${formatYen(secondAmount)}`;
 }
@@ -332,11 +357,12 @@ function scrollToTopAfterRender() {
 }
 
 function renderSetup() {
+  document.title = PILOT_MODE ? "PWF実験(パイロット)" : "PWF実験";
   app.innerHTML = `
     <main class="screen narrow-screen">
       <section class="center-card">
-        <div class="step-label">パイロット</div>
-        <h1 class="app-title">PWF実験(パイロット)</h1>
+        ${PILOT_MODE ? `<div class="step-label">パイロット</div>` : ""}
+        <h1 class="app-title">${PILOT_MODE ? "PWF実験(パイロット)" : "PWF実験"}</h1>
         <form class="setup-form" id="setupForm">
           <div class="field">
             <label for="participant">学籍番号（7桁）</label>
@@ -655,6 +681,8 @@ function renderTaskBody(block, task) {
   if (task.type === "ceMenu") return renderCeMenu(task);
   if (task.type === "bisection") return renderBisection(task);
   if (task.type === "inputMatch") return renderInputMatch(task);
+  if (task.type === "probabilityMatch") return renderProbabilityMatch(task);
+  if (task.type === "probabilityBisection") return renderProbabilityBisection(task);
   return renderMpl(task);
 }
 
@@ -747,6 +775,73 @@ function renderInputMatch(task) {
   `;
 }
 
+function renderProbabilityMatch(task) {
+  const amounts = probabilityMatchAmounts(task);
+  const prev = probabilityReferenceHint([
+    [task.sureSymbol, amounts.sure],
+    [task.highSymbol, amounts.high],
+  ]);
+  return `
+    <section class="question-box">
+      <div class="step-label">確率入力</div>
+      <h3 class="question-title">${escapeHtml(task.prompt)}</h3>
+      ${prev ? `<p class="muted">${escapeHtml(prev)}</p>` : ""}
+      <div class="lottery-compare">
+        <div class="lottery-box lottery-a">
+          <div class="lottery-label">選択肢A</div>
+          <div class="lottery-detail">${escapeHtml(amountLabel(amounts.sure, task.sureSymbol))} を確実に受け取る</div>
+        </div>
+        <div class="vs-label">~</div>
+        <div class="lottery-box lottery-b">
+          <div class="lottery-label">選択肢B</div>
+          <div class="lottery-detail">${escapeHtml(task.unknown)}% の確率で ${escapeHtml(amountLabel(amounts.high, task.highSymbol))}、それ以外は ${escapeHtml(formatYen(task.baselineAmount))}</div>
+        </div>
+      </div>
+      <form class="input-inline" id="probabilityMatchForm">
+        <div class="field">
+          <label for="probabilityValue">${escapeHtml(task.unknown)} (%)</label>
+          <input id="probabilityValue" type="number" min="${task.min}" max="${task.max}" step="1" placeholder="0〜100 の整数" autofocus />
+        </div>
+        <button class="btn-primary" type="submit">回答を保存</button>
+      </form>
+      ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderProbabilityBisection(task) {
+  const runtime = state.runtime;
+  const amounts = probabilityBisectionAmounts(task);
+  const prev = probabilityReferenceHint([
+    [task.sureTaskId, amounts.sure],
+    [task.highTaskId, amounts.high],
+  ]);
+  return `
+    <section class="question-box">
+      <div class="step-label">確率比較 ${runtime.round} / ${task.rounds}</div>
+      <h3 class="question-title">${escapeHtml(task.prompt)}</h3>
+      ${prev ? `<p class="muted">${escapeHtml(prev)}</p>` : ""}
+      <div class="lottery-compare">
+        <div class="lottery-box lottery-a">
+          <div class="lottery-label">選択肢A</div>
+          <div class="lottery-detail">${escapeHtml(amountLabel(amounts.sure, task.sureTaskId))} を確実に受け取る</div>
+        </div>
+        <div class="vs-label">vs</div>
+        <div class="lottery-box lottery-b">
+          <div class="lottery-label">選択肢B</div>
+          <div class="lottery-detail"><strong class="changing-amount">${formatProbability(runtime.candidate)}</strong> の確率で ${escapeHtml(amountLabel(amounts.high, task.highTaskId))}、それ以外は ${escapeHtml(formatYen(task.baselineAmount))}</div>
+        </div>
+      </div>
+      <p class="muted">現在の探索範囲: ${formatProbability(runtime.low)} から ${formatProbability(runtime.high)}</p>
+      ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+      <div class="btn-row">
+        <button class="btn-choice" id="chooseA">選択肢Aを選ぶ</button>
+        <button class="btn-choice" id="chooseB">選択肢Bを選ぶ</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderMpl(task) {
   const useCompact = shouldUseCompactTable(task.rows);
   const compactClass = useCompact ? "compact-question" : "";
@@ -802,6 +897,18 @@ function bindTaskHandlers(block, task, options = {}) {
     });
     return;
   }
+  if (task.type === "probabilityMatch") {
+    document.getElementById("probabilityMatchForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitProbabilityMatch(block, task, options);
+    });
+    return;
+  }
+  if (task.type === "probabilityBisection") {
+    document.getElementById("chooseA").addEventListener("click", () => submitProbabilityBisection(block, task, "A", options));
+    document.getElementById("chooseB").addEventListener("click", () => submitProbabilityBisection(block, task, "B", options));
+    return;
+  }
   document.querySelectorAll("[data-row][data-choice]").forEach((button) => {
     button.addEventListener("click", () => {
       const rows = currentSwitchRows(task);
@@ -828,6 +935,15 @@ function ensureRuntime(task) {
       low: task.low,
       high: task.high,
       candidate: midpoint(task.low, task.high),
+      round: 1,
+      history: [],
+    };
+  } else if (task.type === "probabilityBisection") {
+    state.runtime = {
+      ...base,
+      low: task.low,
+      high: task.high,
+      candidate: midpointProbability(task.low, task.high),
       round: 1,
       history: [],
     };
@@ -939,6 +1055,101 @@ function submitInputMatch(block, task, options = {}) {
     value,
   });
   nextTask();
+}
+
+function submitProbabilityMatch(block, task, options = {}) {
+  const amounts = probabilityMatchAmounts(task);
+  if (!Number.isFinite(amounts.sure) || !Number.isFinite(amounts.high)) {
+    state.error = "前の金額回答が見つかりません。ページを更新せず、順番に回答してください。";
+    render();
+    return;
+  }
+  if (amounts.high <= task.baselineAmount || amounts.sure <= task.baselineAmount || amounts.sure >= amounts.high) {
+    state.error = "前の金額回答から有効な確率比較を作れません。";
+    render();
+    return;
+  }
+  const input = document.getElementById("probabilityValue");
+  const percent = Number(input.value);
+  if (!Number.isFinite(percent) || percent < task.min || percent > task.max) {
+    state.error = `${task.min}% から ${task.max}% の範囲で数値を入力してください。`;
+    render();
+    return;
+  }
+  if (options.practice) {
+    completePractice();
+    return;
+  }
+  recordTask(block, task, {
+    response_type: "probability_matching",
+    unknown: task.unknown,
+    value: percent / 100,
+    entered_percent: percent,
+    sure_symbol: task.sureSymbol,
+    high_symbol: task.highSymbol,
+    sure_amount: amounts.sure,
+    high_amount: amounts.high,
+    baseline_amount: task.baselineAmount,
+    nominal_weight_target: task.nominalWeightTarget,
+  });
+  nextTask();
+}
+
+function submitProbabilityBisection(block, task, choice, options = {}) {
+  const runtime = state.runtime;
+  const amounts = probabilityBisectionAmounts(task);
+  if (!Number.isFinite(amounts.sure) || !Number.isFinite(amounts.high)) {
+    state.error = "前の金額回答が見つかりません。ページを更新せず、順番に回答してください。";
+    render();
+    return;
+  }
+  if (amounts.high <= task.baselineAmount || amounts.sure <= task.baselineAmount || amounts.sure >= amounts.high) {
+    state.error = "前の金額回答から有効な確率比較を作れません。";
+    render();
+    return;
+  }
+  const candidate = runtime.candidate;
+  const candidateTooLow = choice === "A";
+  runtime.history.push({
+    round: runtime.round,
+    candidate,
+    choice,
+    low: runtime.low,
+    high: runtime.high,
+    sure_amount: amounts.sure,
+    high_amount: amounts.high,
+    baseline_amount: task.baselineAmount,
+  });
+  if (candidateTooLow) {
+    runtime.low = candidate;
+  } else {
+    runtime.high = candidate;
+  }
+  if (runtime.round >= task.rounds) {
+    const estimate = midpointProbability(runtime.low, runtime.high);
+    if (options.practice) {
+      completePractice();
+      return;
+    }
+    recordTask(block, task, {
+      response_type: "probability_bisection",
+      estimate,
+      final_low: runtime.low,
+      final_high: runtime.high,
+      sure_task_id: task.sureTaskId,
+      high_task_id: task.highTaskId,
+      sure_amount: amounts.sure,
+      high_amount: amounts.high,
+      baseline_amount: task.baselineAmount,
+      nominal_weight_target: task.nominalWeightTarget,
+      history: runtime.history,
+    });
+    nextTask();
+    return;
+  }
+  runtime.round += 1;
+  runtime.candidate = midpointProbability(runtime.low, runtime.high);
+  render();
 }
 
 function submitMpl(block, task, options = {}) {
@@ -1062,6 +1273,46 @@ function midpoint(a, b) {
   return roundYen((a + b) / 2);
 }
 
+function midpointProbability(a, b) {
+  const lowPercent = probabilityToPercent(a);
+  const highPercent = probabilityToPercent(b);
+  return Math.floor((lowPercent + highPercent) / 2) / 100;
+}
+
+function formatProbability(value) {
+  return `${probabilityToPercent(value)}%`;
+}
+
+function probabilityToPercent(value) {
+  return Math.round(Number(value) * 100);
+}
+
+function probabilityMatchAmounts(task) {
+  return {
+    sure: previousInputValue(task.sureSymbol),
+    high: previousInputValue(task.highSymbol),
+  };
+}
+
+function probabilityBisectionAmounts(task) {
+  return {
+    sure: previousEstimateByTaskId(task.sureTaskId),
+    high: previousEstimateByTaskId(task.highTaskId),
+  };
+}
+
+function probabilityReferenceHint(entries) {
+  const resolved = entries
+    .filter(([, value]) => Number.isFinite(value))
+    .map(([label, value]) => `${label} = ${formatYen(value)}`);
+  if (!resolved.length) return "";
+  return `前の回答を代入済み: ${resolved.join(", ")}`;
+}
+
+function amountLabel(value, fallback) {
+  return Number.isFinite(value) ? formatYen(value) : fallback;
+}
+
 function recordTask(block, task, payload) {
   const taskMode = currentTaskMode();
   const timeOverSeconds = taskMode === MODE_TIME_PRESSURE ? exceededTaskSeconds() : "";
@@ -1147,12 +1398,16 @@ function renderFinish() {
 function summaryText(payload) {
   if (payload.response_type === "bisection") return `推定値=${payload.estimate}`;
   if (payload.response_type === "outcome_matching") return `${payload.unknown}=${payload.value}`;
+  if (payload.response_type === "probability_matching") return `${payload.unknown}=${formatProbability(payload.value)}`;
+  if (payload.response_type === "probability_bisection") return `推定確率=${formatProbability(payload.estimate)}`;
   return `推定値=${payload.ce_estimate}, 状態=${switchStatusLabel(payload.switch_status)}`;
 }
 
 function taskTypeLabel(type) {
   if (type === "bisection") return "段階比較";
   if (type === "inputMatch") return "金額入力";
+  if (type === "probabilityMatch") return "確率入力";
+  if (type === "probabilityBisection") return "確率段階比較";
   if (type === "mpl") return "選択リスト";
   if (type === "ceMenu") return "確実同等額リスト";
   return type;
@@ -1226,6 +1481,14 @@ function previousInputValue(symbol) {
     record.payload?.response_type === "outcome_matching" && record.payload?.unknown === symbol
   );
   return previous ? previous.payload.value : null;
+}
+
+function previousEstimateByTaskId(taskId) {
+  const previous = [...state.records].reverse().find((record) =>
+    record.task_id === taskId && Number.isFinite(Number(record.payload?.estimate ?? record.payload?.ce_estimate ?? record.payload?.value))
+  );
+  if (!previous) return null;
+  return Number(previous.payload.estimate ?? previous.payload.ce_estimate ?? previous.payload.value);
 }
 
 function downloadJson(filename, data) {
@@ -1354,7 +1617,7 @@ function runSmokeTest() {
   });
 
   const taskTypes = new Set(state.records.map((record) => record.task_type));
-  ["bisection", "inputMatch", "mpl"].forEach((type) => {
+  ["bisection", "inputMatch", "probabilityMatch", "probabilityBisection", "mpl"].forEach((type) => {
     if (!taskTypes.has(type)) failures.push(`missing task type: ${type}`);
   });
   if (state.records.length !== expectedRecords) {
@@ -1446,6 +1709,60 @@ function recordSmokeTask(block, task) {
     return;
   }
 
+  if (task.type === "probabilityMatch") {
+    const amounts = probabilityMatchAmounts(task);
+    recordTask(block, task, {
+      response_type: "probability_matching",
+      unknown: task.unknown,
+      value: 0.5,
+      entered_percent: 50,
+      sure_symbol: task.sureSymbol,
+      high_symbol: task.highSymbol,
+      sure_amount: amounts.sure,
+      high_amount: amounts.high,
+      baseline_amount: task.baselineAmount,
+      nominal_weight_target: task.nominalWeightTarget,
+    });
+    return;
+  }
+
+  if (task.type === "probabilityBisection") {
+    const amounts = probabilityBisectionAmounts(task);
+    let low = task.low;
+    let high = task.high;
+    const history = [];
+    for (let round = 1; round <= task.rounds; round += 1) {
+      const candidate = midpointProbability(low, high);
+      const choice = round % 2 === 1 ? "A" : "B";
+      history.push({
+        round,
+        candidate,
+        choice,
+        low,
+        high,
+        sure_amount: amounts.sure,
+        high_amount: amounts.high,
+        baseline_amount: task.baselineAmount,
+      });
+      if (choice === "A") low = candidate;
+      else high = candidate;
+    }
+    recordTask(block, task, {
+      response_type: "probability_bisection",
+      estimate: midpointProbability(low, high),
+      final_low: low,
+      final_high: high,
+      sure_task_id: task.sureTaskId,
+      high_task_id: task.highTaskId,
+      sure_amount: amounts.sure,
+      high_amount: amounts.high,
+      baseline_amount: task.baselineAmount,
+      nominal_weight_target: task.nominalWeightTarget,
+      history,
+    });
+    return;
+  }
+
   const choices = smokeChoices(task.rows, task.switchDirection);
   const summary = summarizeSwitch(task.rows, choices, task.switchDirection);
   recordTask(block, task, {
@@ -1484,7 +1801,7 @@ function renderSmokeResult(failures, expectedRecords) {
         <h1>${passed ? "Smoke test passed" : "Smoke test failed"}</h1>
         <p data-smoke-status="${passed ? "passed" : "failed"}">
           ${passed
-            ? `生成了 ${state.records.length} / ${expectedRecords} 条 task-level 记录，覆盖 bisection、outcome matching、MPL。`
+            ? `生成了 ${state.records.length} / ${expectedRecords} 条 task-level 记录，覆盖 bisection、outcome matching、probability matching、probability bisection、MPL。`
             : `发现 ${failures.length} 个问题。`}
         </p>
         <div class="result-list">

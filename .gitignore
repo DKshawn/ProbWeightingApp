@@ -22,6 +22,7 @@ frontend/.env.local
 # Local analysis/test outputs
 analysis_outputs/
 smoke_outputs/
+README.local-experiment.md
 
 # OS
 .DS_Store
