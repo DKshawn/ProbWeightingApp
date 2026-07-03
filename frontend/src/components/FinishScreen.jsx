@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { getCsvUrl, getUtilityCurvatureCsvUrl } from "../api/client";
+import { getCiCsvUrl, getPwfCsvUrl } from "../api/client";
 
 export default function FinishScreen({ studentId }) {
   const [saving, setSaving] = useState(false);
   const [downloadError, setDownloadError] = useState("");
-  const csvUrl = getCsvUrl(studentId);
-  const utilityCurvatureCsvUrl = getUtilityCurvatureCsvUrl(studentId);
+  const ciCsvUrl = getCiCsvUrl(studentId);
+  const pwfCsvUrl = getPwfCsvUrl(studentId);
 
   function buildTimestamp() {
     const now = new Date();
@@ -40,12 +40,12 @@ export default function FinishScreen({ studentId }) {
     const timestamp = buildTimestamp();
     const files = [
       {
-        url: csvUrl,
-        name: `ProbWeighting_${studentId}_${timestamp}.csv`,
+        url: ciCsvUrl,
+        name: `CI_${studentId}_${timestamp}.csv`,
       },
       {
-        url: utilityCurvatureCsvUrl,
-        name: `UtilityCurvature_${studentId}_${timestamp}.csv`,
+        url: pwfCsvUrl,
+        name: `PWF_${studentId}_${timestamp}.csv`,
       },
     ];
 

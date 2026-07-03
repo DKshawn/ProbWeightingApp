@@ -15,7 +15,7 @@ class SessionStartRequest(BaseModel):
         return v
 
 
-class TrialResult(BaseModel):
+class CiResult(BaseModel):
     session_id: str
     student_id: str
     name: str
@@ -25,6 +25,9 @@ class TrialResult(BaseModel):
     trial: int
     block: int
     N: int
+    student_id_last_digit: str = ""
+    amount_level: str = "low"
+    amount_multiplier: float = 1
     p: float
     q: float
     r: float
@@ -54,6 +57,20 @@ class TrialResult(BaseModel):
     def validate_study_mode(cls, v: str) -> str:
         if v not in {"full", "pilot"}:
             raise ValueError("study_mode must be one of: full, pilot")
+        return v
+
+    @field_validator("amount_level")
+    @classmethod
+    def validate_amount_level(cls, v: str) -> str:
+        if v not in {"low", "high"}:
+            raise ValueError("amount_level must be one of: low, high")
+        return v
+
+    @field_validator("amount_multiplier")
+    @classmethod
+    def validate_amount_multiplier(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("amount_multiplier must be positive")
         return v
 
     @field_validator("choice")
@@ -226,7 +243,7 @@ class UtilityElicitationBatch(BaseModel):
         return self
 
 
-class UtilityCurvatureBatch(BaseModel):
+class PwfBatch(BaseModel):
     results: list[dict[str, Any]]
 
     @field_validator("results")

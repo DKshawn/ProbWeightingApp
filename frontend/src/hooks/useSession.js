@@ -1,5 +1,10 @@
 import { useRef, useState } from "react";
-import { saveResult, saveUtilityCurvatureResults, startSession } from "../api/client";
+import {
+  completePwfSession,
+  saveCiResult,
+  savePwfResults,
+  startSession,
+} from "../api/client";
 
 function getStudyModeFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -7,6 +12,26 @@ function getStudyModeFromUrl() {
     return "pilot";
   }
   return "full";
+}
+
+function savedTrialNumberSet(savedTrialResults) {
+  return new Set(
+    (savedTrialResults || [])
+      .map((row) => Number(row.trial))
+      .filter((trial) => Number.isFinite(trial)),
+  );
+}
+
+function firstUnansweredTrialIndex(trials, savedTrialResults) {
+  const savedTrials = savedTrialNumberSet(savedTrialResults);
+  const index = trials.findIndex((trial) => !savedTrials.has(Number(trial.trial)));
+  return index < 0 ? trials.length : index;
+}
+
+function stepForTrialResume(trials, trialIndex) {
+  if (!trials.length || trialIndex >= trials.length) return 5;
+  if (trialIndex > 0 && trials[trialIndex]?.block !== trials[trialIndex - 1]?.block) return 6;
+  return 1;
 }
 
 export function useSession() {
@@ -18,15 +43,15 @@ export function useSession() {
   const [timePressureSeconds, setTimePressureSeconds] = useState(0);
   const [trials, setTrials] = useState([]);
   const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [currentStep, setCurrentStep] = useState(0); // 0=utility_curvature,1,2,3,4,5=finish,6=block_break
+  const [currentStep, setCurrentStep] = useState(0); // 0=pwf,1,2,3,4,5=finish,6=block_break
   const [stepData, setStepData] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const pendingOperationsRef = useRef(0);
-  const utilitySessionRef = useRef(null);
-  const utilitySessionPromiseRef = useRef(null);
-  const utilitySaveQueueRef = useRef(Promise.resolve());
-  const utilitySaveFailedRef = useRef(false);
+  const pwfSessionRef = useRef(null);
+  const pwfSessionPromiseRef = useRef(null);
+  const pwfSaveQueueRef = useRef(Promise.resolve());
+  const pwfSaveFailedRef = useRef(false);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
   const totalTrials = trials.length;
@@ -43,7 +68,7 @@ export function useSession() {
     }
   }
 
-  function extractUtilityStudentId(message) {
+  function extractPwfStudentId(message) {
     const sid = String(message?.participant ?? "").trim();
     if (!sid) {
       throw new Error("学籍番号を取得できませんでした");
@@ -51,33 +76,39 @@ export function useSession() {
     return sid;
   }
 
-  async function ensureUtilityCurvatureSession(message) {
-    const sid = extractUtilityStudentId(message);
-    const currentSession = utilitySessionRef.current;
-    if (currentSession?.studentId === sid) return currentSession;
+  async function ensurePwfSession(message) {
+    const sid = extractPwfStudentId(message);
+    const requestedStudyMode = getStudyModeFromUrl();
+    const currentSession = pwfSessionRef.current;
+    if (currentSession?.studentId === sid && currentSession?.studyMode === requestedStudyMode) return currentSession;
 
-    const currentPromise = utilitySessionPromiseRef.current;
-    if (currentPromise?.studentId === sid) return currentPromise.promise;
+    const currentPromise = pwfSessionPromiseRef.current;
+    if (currentPromise?.studentId === sid && currentPromise?.studyMode === requestedStudyMode) return currentPromise.promise;
 
-    utilitySaveQueueRef.current = Promise.resolve();
-    utilitySaveFailedRef.current = false;
+    pwfSaveQueueRef.current = Promise.resolve();
+    pwfSaveFailedRef.current = false;
 
     const sessionName = sid;
-    const requestedStudyMode = getStudyModeFromUrl();
     const promise = startSession(sid, sessionName, requestedStudyMode)
       .then((data) => {
         const resolvedStudyMode = data.study_mode || requestedStudyMode;
+        const resolvedTrials = data.trials || [];
+        const savedTrialResults = data.saved_ci_results || [];
+        const pwfCompleted = Boolean(data.pwf_completed) || savedTrialResults.length > 0;
+        const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
         const session = {
           sessionId: data.session_id,
           studentId: sid,
           name: sessionName,
           studyMode: resolvedStudyMode,
-          trials: data.trials,
+          trials: resolvedTrials,
           experimentMode: data.experiment_mode || "normal",
           timePressureSeconds: data.time_pressure_seconds || 0,
+          savedTrialResults,
+          pwfCompleted,
         };
 
-        utilitySessionRef.current = session;
+        pwfSessionRef.current = session;
         setSessionId(session.sessionId);
         setTrials(session.trials);
         setStudentId(session.studentId);
@@ -85,29 +116,32 @@ export function useSession() {
         setStudyMode(session.studyMode);
         setExperimentMode(session.experimentMode);
         setTimePressureSeconds(session.timePressureSeconds);
-        setCurrentTrialIndex(0);
+        setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
+        if (pwfCompleted) {
+          setCurrentStep(stepForTrialResume(resolvedTrials, resumeTrialIndex));
+        }
         return session;
       })
       .finally(() => {
-        if (utilitySessionPromiseRef.current?.promise === promise) {
-          utilitySessionPromiseRef.current = null;
+        if (pwfSessionPromiseRef.current?.promise === promise) {
+          pwfSessionPromiseRef.current = null;
         }
       });
 
-    utilitySessionPromiseRef.current = { studentId: sid, promise };
+    pwfSessionPromiseRef.current = { studentId: sid, studyMode: requestedStudyMode, promise };
     return promise;
   }
 
-  function buildUtilityCurvatureRecord(message, session) {
+  function buildPwfRecord(message, session) {
     const record = message?.record;
     if (!record || typeof record !== "object") {
-      throw new Error("Utility curvature の記録を取得できませんでした");
+      throw new Error("PWF の記録を取得できませんでした");
     }
 
-    const curvatureTrial = Number(record.curvature_trial ?? message?.curvature_trial);
-    if (!Number.isFinite(curvatureTrial) || curvatureTrial < 1) {
-      throw new Error("Utility curvature の試行番号を取得できませんでした");
+    const pwfTrial = Number(record.pwf_trial ?? message?.pwf_trial);
+    if (!Number.isFinite(pwfTrial) || pwfTrial < 1) {
+      throw new Error("PWF の試行番号を取得できませんでした");
     }
 
     return {
@@ -116,26 +150,26 @@ export function useSession() {
       student_id: session.studentId,
       name: session.name,
       study_mode: session.studyMode,
-      curvature_trial: curvatureTrial,
+      pwf_trial: pwfTrial,
     };
   }
 
-  function enqueueUtilityCurvatureRecordSave(message) {
-    const saveTask = utilitySaveQueueRef.current.then(async () => {
-      const session = await ensureUtilityCurvatureSession(message);
-      const record = buildUtilityCurvatureRecord(message, session);
-      await saveUtilityCurvatureResults([record]);
+  function enqueuePwfRecordSave(message) {
+    const saveTask = pwfSaveQueueRef.current.then(async () => {
+      const session = await ensurePwfSession(message);
+      const record = buildPwfRecord(message, session);
+      await savePwfResults([record]);
     });
 
-    utilitySaveQueueRef.current = saveTask.catch(() => {});
+    pwfSaveQueueRef.current = saveTask.catch(() => {});
     return saveTask;
   }
 
-  async function handleUtilityCurvatureStart(message) {
+  async function handlePwfStart(message) {
     beginOperation();
     setError(null);
     try {
-      await ensureUtilityCurvatureSession(message);
+      await ensurePwfSession(message);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -143,29 +177,34 @@ export function useSession() {
     }
   }
 
-  async function handleUtilityCurvatureRecord(message) {
+  async function handlePwfRecord(message) {
     beginOperation();
     setError(null);
     try {
-      await enqueueUtilityCurvatureRecordSave(message);
+      await enqueuePwfRecordSave(message);
     } catch (e) {
-      utilitySaveFailedRef.current = true;
+      pwfSaveFailedRef.current = true;
       setError(e.message);
     } finally {
       endOperation();
     }
   }
 
-  async function handleUtilityCurvatureComplete(message) {
+  async function handlePwfComplete(message) {
     beginOperation();
     setError(null);
     try {
-      await ensureUtilityCurvatureSession(message);
-      await utilitySaveQueueRef.current;
-      if (utilitySaveFailedRef.current) {
-        throw new Error("Utility curvature 結果の保存に失敗しました");
+      const session = await ensurePwfSession(message);
+      await pwfSaveQueueRef.current;
+      if (pwfSaveFailedRef.current) {
+        throw new Error("PWF 結果の保存に失敗しました");
       }
-      setCurrentStep(1);
+      await completePwfSession(session.sessionId);
+      session.pwfCompleted = true;
+      const resumeTrialIndex = firstUnansweredTrialIndex(session.trials, session.savedTrialResults);
+      setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(session.trials.length - 1, 0)));
+      setStepData({});
+      setCurrentStep(stepForTrialResume(session.trials, resumeTrialIndex));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -201,7 +240,7 @@ export function useSession() {
     const ciSatisfied = !timedOut && choice === "Indifferent";
 
     try {
-      await saveResult({
+      await saveCiResult({
         session_id: sessionId,
         student_id: studentId,
         name,
@@ -211,6 +250,9 @@ export function useSession() {
         trial: trial.trial,
         block: trial.block,
         N,
+        student_id_last_digit: trial.student_id_last_digit ?? "",
+        amount_level: trial.amount_level ?? "low",
+        amount_multiplier: trial.amount_multiplier ?? 1,
         p: trial.p,
         q: trial.q,
         r: trial.r,
@@ -264,9 +306,9 @@ export function useSession() {
     stepData,
     loading,
     error,
-    handleUtilityCurvatureStart,
-    handleUtilityCurvatureRecord,
-    handleUtilityCurvatureComplete,
+    handlePwfStart,
+    handlePwfRecord,
+    handlePwfComplete,
     submitStep1,
     submitStep2,
     submitStep3,

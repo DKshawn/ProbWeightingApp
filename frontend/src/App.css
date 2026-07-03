@@ -487,20 +487,20 @@ body {
   font-weight: 600;
 }
 
-.utility-curvature-host {
+.pwf-host {
   position: relative;
   min-height: 100vh;
   background: #f5f7fa;
 }
 
-.utility-curvature-frame {
+.pwf-frame {
   width: 100%;
   min-height: 100vh;
   border: 0;
   display: block;
 }
 
-.utility-curvature-overlay {
+.pwf-overlay {
   position: fixed;
   inset: 0;
   z-index: 20;

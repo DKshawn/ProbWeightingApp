@@ -1,21 +1,21 @@
 import { useEffect, useRef } from "react";
 
-export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, loading, error }) {
+export default function PwfFrame({ onStart, onRecord, onComplete, loading, error }) {
   const completedRef = useRef(false);
-  const utilityCurvatureSrc = buildUtilityCurvatureSrc();
+  const pwfSrc = buildPwfSrc();
 
   useEffect(() => {
     function handleMessage(event) {
       if (event.origin !== window.location.origin) return;
-      if (event.data?.type === "utility-curvature-start") {
+      if (event.data?.type === "pwf-start") {
         onStart(event.data);
         return;
       }
-      if (event.data?.type === "utility-curvature-record") {
+      if (event.data?.type === "pwf-record") {
         onRecord(event.data);
         return;
       }
-      if (event.data?.type !== "utility-curvature-complete") return;
+      if (event.data?.type !== "pwf-complete") return;
       if (completedRef.current) return;
 
       completedRef.current = true;
@@ -27,14 +27,14 @@ export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, l
   }, [onStart, onRecord, onComplete]);
 
   return (
-    <div className="utility-curvature-host">
+    <div className="pwf-host">
       <iframe
-        title="Utility curvature block"
-        src={utilityCurvatureSrc}
-        className="utility-curvature-frame"
+        title="PWF block"
+        src={pwfSrc}
+        className="pwf-frame"
       />
       {(loading || error) && (
-        <div className="utility-curvature-overlay">
+        <div className="pwf-overlay">
           {loading && <p>保存中...</p>}
           {error && <p className="error">{error}</p>}
         </div>
@@ -43,7 +43,7 @@ export default function UtilityCurvatureFrame({ onStart, onRecord, onComplete, l
   );
 }
 
-function buildUtilityCurvatureSrc() {
+function buildPwfSrc() {
   const sourceParams = new URLSearchParams(window.location.search);
   const targetParams = new URLSearchParams({ embedded: "1" });
   const isPilot =
@@ -51,5 +51,5 @@ function buildUtilityCurvatureSrc() {
     sourceParams.get("study_mode") === "pilot" ||
     sourceParams.get("pilot") === "1";
   if (isPilot) targetParams.set("mode", "pilot");
-  return `/utility-curvature/index.html?${targetParams.toString()}`;
+  return `/pwf/index.html?${targetParams.toString()}`;
 }

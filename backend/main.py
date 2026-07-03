@@ -10,37 +10,55 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 try:
-    from .models.result import SessionStartRequest, TrialResult, UtilityCurvatureBatch, UtilityElicitationBatch
+    from .models.result import CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
     from .storage import (
+        DuplicateSubmissionError,
         StorageError,
         StorageNotConfiguredError,
         create_session,
-        get_utility_curvature_results_by_student,
+        find_completed_submission,
+        get_resume_session,
+        get_session,
+        get_ci_results_by_session,
+        get_pwf_results_by_student,
+        get_pwf_results_by_session,
         get_utility_results_by_student,
-        get_results_by_student,
+        get_ci_results_by_student,
         get_summary as get_storage_summary,
-        save_result as save_result_record,
-        save_utility_curvature_results as save_utility_curvature_result_records,
+        has_other_completed_submission,
+        mark_session_completed_if_ready,
+        mark_pwf_completed,
+        save_ci_result as save_ci_result_record,
+        save_pwf_results as save_pwf_result_records,
         save_utility_results as save_utility_result_records,
-        session_exists,
         storage_mode,
+        touch_session,
     )
     from .trial_generator import generate_all_trials
 except ImportError:
-    from models.result import SessionStartRequest, TrialResult, UtilityCurvatureBatch, UtilityElicitationBatch
+    from models.result import CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
     from storage import (
+        DuplicateSubmissionError,
         StorageError,
         StorageNotConfiguredError,
         create_session,
-        get_utility_curvature_results_by_student,
+        find_completed_submission,
+        get_resume_session,
+        get_session,
+        get_ci_results_by_session,
+        get_pwf_results_by_student,
+        get_pwf_results_by_session,
         get_utility_results_by_student,
-        get_results_by_student,
+        get_ci_results_by_student,
         get_summary as get_storage_summary,
-        save_result as save_result_record,
-        save_utility_curvature_results as save_utility_curvature_result_records,
+        has_other_completed_submission,
+        mark_session_completed_if_ready,
+        mark_pwf_completed,
+        save_ci_result as save_ci_result_record,
+        save_pwf_results as save_pwf_result_records,
         save_utility_results as save_utility_result_records,
-        session_exists,
         storage_mode,
+        touch_session,
     )
     from trial_generator import generate_all_trials
 
@@ -73,10 +91,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-UTILITY_TIME_PRESSURE_SECONDS = 15
+PWF_TIME_PRESSURE_SECONDS = 15
 
 
 def _raise_storage_http_error(exc: StorageError) -> None:
+    if isinstance(exc, DuplicateSubmissionError):
+        raise HTTPException(
+            status_code=409,
+            detail="この学籍番号はこのモードですでに提出済みです。",
+        ) from exc
     if isinstance(exc, StorageNotConfiguredError):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     raise HTTPException(status_code=500, detail="データベース処理に失敗しました") from exc
@@ -86,14 +109,65 @@ def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
     return "normal", 0
 
 
-def _assign_utility_experiment_mode(student_id: str) -> tuple[str, int]:
+def _assign_pwf_experiment_mode(student_id: str) -> tuple[str, int]:
     if not student_id or not student_id[-1].isdigit():
         raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
 
     last_digit = int(student_id[-1])
     if last_digit % 2 == 0:
-        return "time_pressure", UTILITY_TIME_PRESSURE_SECONDS
+        return "time_pressure", PWF_TIME_PRESSURE_SECONDS
     return "normal", 0
+
+
+def _completed_submission_error() -> None:
+    raise HTTPException(
+        status_code=409,
+        detail="この学籍番号はこのモードですでに提出済みです。",
+    )
+
+
+def _session_not_found_error() -> None:
+    raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+
+def _session_can_accept_writes(session_id: str) -> dict:
+    try:
+        session = get_session(session_id)
+        if session is None:
+            _session_not_found_error()
+        if session.get("status") == "completed":
+            _completed_submission_error()
+        if has_other_completed_submission(session_id):
+            _completed_submission_error()
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+    return session
+
+
+def _build_session_response(session: dict, *, resumed: bool) -> dict:
+    session_id = session["session_id"]
+    try:
+        saved_ci_results = get_ci_results_by_session(session_id)
+        saved_pwf_results = get_pwf_results_by_session(session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    pwf_completed = bool(session.get("pwf_completed")) or bool(saved_ci_results)
+
+    return {
+        "session_id": session_id,
+        "trials": session["trials"],
+        "experiment_mode": session.get("experiment_mode", "normal"),
+        "time_pressure_seconds": session.get("time_pressure_seconds", 0),
+        "pwf_experiment_mode": _assign_pwf_experiment_mode(session["student_id"])[0],
+        "pwf_time_pressure_seconds": _assign_pwf_experiment_mode(session["student_id"])[1],
+        "study_mode": session.get("study_mode", "full"),
+        "session_status": session.get("status", "started"),
+        "resumed": resumed,
+        "pwf_completed": pwf_completed,
+        "saved_ci_results": saved_ci_results,
+        "saved_pwf_results": saved_pwf_results,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -104,46 +178,59 @@ def start_session(req: SessionStartRequest):
     if not req.student_id.strip() or not req.name.strip():
         raise HTTPException(status_code=400, detail="student_id と name は必須です")
 
-    session_id = str(uuid.uuid4())
     student_id = req.student_id.strip()
     name = req.name.strip()
     study_mode = req.study_mode
     experiment_mode, time_pressure_seconds = _assign_experiment_mode(student_id)
-    utility_experiment_mode, utility_time_pressure_seconds = _assign_utility_experiment_mode(student_id)
-    trials = generate_all_trials(study_mode=study_mode)
 
     try:
+        if find_completed_submission(student_id, study_mode):
+            _completed_submission_error()
+
+        resume_session = get_resume_session(student_id, study_mode)
+        if resume_session:
+            if mark_session_completed_if_ready(resume_session["session_id"]):
+                _completed_submission_error()
+            touch_session(resume_session["session_id"])
+            resume_session = get_session(resume_session["session_id"])
+            return _build_session_response(resume_session, resumed=True)
+
+        session_id = str(uuid.uuid4())
+        trials = generate_all_trials(study_mode=study_mode, student_id=student_id)
         create_session(session_id, student_id, name, trials, study_mode, experiment_mode, time_pressure_seconds)
+        session = get_session(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return {
-        "session_id": session_id,
-        "trials": trials,
-        "experiment_mode": experiment_mode,
-        "time_pressure_seconds": time_pressure_seconds,
-        "utility_experiment_mode": utility_experiment_mode,
-        "utility_time_pressure_seconds": utility_time_pressure_seconds,
-        "study_mode": study_mode,
-    }
+    return _build_session_response(session, resumed=False)
 
 
 # ---------------------------------------------------------------------------
-# POST /api/results
+# POST /api/ci-results
 # ---------------------------------------------------------------------------
-@app.post("/api/results")
-def save_result(result: TrialResult):
-    try:
-        exists = session_exists(result.session_id)
-    except StorageError as exc:
-        _raise_storage_http_error(exc)
-
-    if not exists:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+@app.post("/api/ci-results")
+def save_ci_result(result: CiResult):
+    _session_can_accept_writes(result.session_id)
 
     record = result.model_dump()
     try:
-        save_result_record(record)
+        save_ci_result_record(record)
+        session_completed = mark_session_completed_if_ready(result.session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "session_completed": session_completed}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/session/{session_id}/pwf-complete
+# ---------------------------------------------------------------------------
+@app.post("/api/session/{session_id}/pwf-complete")
+def complete_pwf_session(session_id: str):
+    _session_can_accept_writes(session_id)
+
+    try:
+        mark_pwf_completed(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
@@ -160,13 +247,7 @@ def save_utility_results(batch: UtilityElicitationBatch):
         raise HTTPException(status_code=400, detail="同じセッションの結果だけを送信してください")
 
     session_id = next(iter(session_ids))
-    try:
-        exists = session_exists(session_id)
-    except StorageError as exc:
-        _raise_storage_http_error(exc)
-
-    if not exists:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+    _session_can_accept_writes(session_id)
 
     records = [result.model_dump() for result in batch.results]
     try:
@@ -178,25 +259,19 @@ def save_utility_results(batch: UtilityElicitationBatch):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/utility-curvature-results
+# POST /api/pwf-results
 # ---------------------------------------------------------------------------
-@app.post("/api/utility-curvature-results")
-def save_utility_curvature_results(batch: UtilityCurvatureBatch):
+@app.post("/api/pwf-results")
+def save_pwf_results(batch: PwfBatch):
     session_ids = {result.get("session_id") for result in batch.results}
     if len(session_ids) != 1 or None in session_ids:
         raise HTTPException(status_code=400, detail="同じセッションの結果だけを送信してください")
 
     session_id = next(iter(session_ids))
-    try:
-        exists = session_exists(session_id)
-    except StorageError as exc:
-        _raise_storage_http_error(exc)
-
-    if not exists:
-        raise HTTPException(status_code=404, detail="セッションが見つかりません")
+    _session_can_accept_writes(session_id)
 
     try:
-        save_utility_curvature_result_records(batch.results)
+        save_pwf_result_records(batch.results)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
@@ -204,18 +279,19 @@ def save_utility_curvature_results(batch: UtilityCurvatureBatch):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/results/{student_id}/csv
+# GET /api/ci-results/{student_id}/csv
 # ---------------------------------------------------------------------------
-CSV_COLUMNS = [
+CI_CSV_COLUMNS = [
     "StudentID", "Name", "Trial", "Block", "N",
     "study_mode", "experiment_mode", "time_pressure_seconds",
+    "student_id_last_digit", "amount_level", "amount_multiplier",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
     "choice", "ci_satisfied", "response_time_ms", "timed_out", "Timestamp",
 ]
 
-FIELD_MAP = {
+CI_FIELD_MAP = {
     "StudentID": "student_id",
     "Name": "name",
     "study_mode": "study_mode",
@@ -224,6 +300,9 @@ FIELD_MAP = {
     "N": "N",
     "experiment_mode": "experiment_mode",
     "time_pressure_seconds": "time_pressure_seconds",
+    "student_id_last_digit": "student_id_last_digit",
+    "amount_level": "amount_level",
+    "amount_multiplier": "amount_multiplier",
     "p": "p",
     "q": "q",
     "r": "r",
@@ -276,27 +355,35 @@ UTILITY_FIELD_MAP = {
     "Timestamp": "Timestamp",
 }
 
-UTILITY_CURVATURE_CSV_COLUMNS = [
-    "session_id", "StudentID", "Name", "study_mode", "curvature_trial",
+PWF_CSV_COLUMNS = [
+    "session_id", "StudentID", "Name", "study_mode", "pwf_trial",
     "participant", "assignment_group", "assignment_modulus", "student_id_last3",
-    "assigned_block_id", "block_id", "block_title", "task_id", "is_anchor",
-    "task_index", "task_type", "task_mode", "time_limit_seconds", "timed_out",
-    "time_over_seconds", "response_type", "estimate", "switch_lower",
+    "student_id_last_digit", "amount_level", "amount_multiplier", "assigned_block_id",
+    "block_id", "block_title", "task_id", "is_anchor", "task_index",
+    "task_type", "task_mode", "time_limit_seconds", "timed_out",
+    "time_over_seconds", "has_memory_task", "memory_digits", "memory_seconds",
+    "memory_number", "memory_input_pre", "memory_pre_correct",
+    "memory_input_post", "memory_post_correct", "memory_display_duration_ms",
+    "memory_pre_response_time_ms", "memory_post_response_time_ms",
+    "response_type", "estimate", "switch_lower",
     "switch_upper", "switch_row", "switch_direction", "switch_status",
     "monotonic", "response_time_ms", "prompt", "source_timestamp",
     "payload_json", "Timestamp",
 ]
 
-UTILITY_CURVATURE_FIELD_MAP = {
+PWF_FIELD_MAP = {
     "session_id": "session_id",
     "StudentID": "student_id",
     "Name": "name",
     "study_mode": "study_mode",
-    "curvature_trial": "curvature_trial",
+    "pwf_trial": "pwf_trial",
     "participant": "participant",
     "assignment_group": "assignment_group",
     "assignment_modulus": "assignment_modulus",
     "student_id_last3": "student_id_last3",
+    "student_id_last_digit": "student_id_last_digit",
+    "amount_level": "amount_level",
+    "amount_multiplier": "amount_multiplier",
     "assigned_block_id": "assigned_block_id",
     "block_id": "block_id",
     "block_title": "block_title",
@@ -308,6 +395,17 @@ UTILITY_CURVATURE_FIELD_MAP = {
     "time_limit_seconds": "time_limit_seconds",
     "timed_out": "timed_out",
     "time_over_seconds": "time_over_seconds",
+    "has_memory_task": "has_memory_task",
+    "memory_digits": "memory_digits",
+    "memory_seconds": "memory_seconds",
+    "memory_number": "memory_number",
+    "memory_input_pre": "memory_input_pre",
+    "memory_pre_correct": "memory_pre_correct",
+    "memory_input_post": "memory_input_post",
+    "memory_post_correct": "memory_post_correct",
+    "memory_display_duration_ms": "memory_display_duration_ms",
+    "memory_pre_response_time_ms": "memory_pre_response_time_ms",
+    "memory_post_response_time_ms": "memory_post_response_time_ms",
     "response_type": "response_type",
     "estimate": "estimate",
     "switch_lower": "switch_lower",
@@ -324,10 +422,10 @@ UTILITY_CURVATURE_FIELD_MAP = {
 }
 
 
-@app.get("/api/results/{student_id}/csv")
-def download_csv(student_id: str):
+@app.get("/api/ci-results/{student_id}/csv")
+def download_ci_csv(student_id: str):
     try:
-        student_results = get_results_by_student(student_id)
+        student_results = get_ci_results_by_student(student_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
@@ -335,13 +433,13 @@ def download_csv(student_id: str):
         raise HTTPException(status_code=404, detail="該当する結果が見つかりません")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"ProbWeighting_{student_id}_{timestamp}.csv"
+    filename = f"CI_{student_id}_{timestamp}.csv"
 
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+    writer = csv.DictWriter(output, fieldnames=CI_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for r in student_results:
-        row = {col: r.get(FIELD_MAP[col], "") for col in CSV_COLUMNS}
+        row = {col: r.get(CI_FIELD_MAP[col], "") for col in CI_CSV_COLUMNS}
         writer.writerow(row)
 
     output.seek(0)
@@ -380,24 +478,24 @@ def download_utility_csv(student_id: str):
     )
 
 
-@app.get("/api/utility-curvature-results/{student_id}/csv")
-def download_utility_curvature_csv(student_id: str):
+@app.get("/api/pwf-results/{student_id}/csv")
+def download_pwf_csv(student_id: str):
     try:
-        student_results = get_utility_curvature_results_by_student(student_id)
+        student_results = get_pwf_results_by_student(student_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
     if not student_results:
-        raise HTTPException(status_code=404, detail="該当する utility curvature 結果が見つかりません")
+        raise HTTPException(status_code=404, detail="該当する PWF 結果が見つかりません")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"UtilityCurvature_{student_id}_{timestamp}.csv"
+    filename = f"PWF_{student_id}_{timestamp}.csv"
 
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=UTILITY_CURVATURE_CSV_COLUMNS, extrasaction="ignore")
+    writer = csv.DictWriter(output, fieldnames=PWF_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for r in student_results:
-        row = {col: r.get(UTILITY_CURVATURE_FIELD_MAP[col], "") for col in UTILITY_CURVATURE_CSV_COLUMNS}
+        row = {col: r.get(PWF_FIELD_MAP[col], "") for col in PWF_CSV_COLUMNS}
         row["payload_json"] = json.dumps(row["payload_json"], ensure_ascii=False, separators=(",", ":"))
         writer.writerow(row)
 
@@ -410,9 +508,9 @@ def download_utility_curvature_csv(student_id: str):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/results/summary
+# GET /api/ci-results/summary
 # ---------------------------------------------------------------------------
-@app.get("/api/results/summary")
+@app.get("/api/ci-results/summary")
 def get_summary():
     try:
         return get_storage_summary()

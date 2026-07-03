@@ -1,6 +1,8 @@
 # ProbWeightingApp
 
-React + FastAPI web experiment for testing Prelec's Compound Invariance axiom.
+React + FastAPI web experiment with a PWF module and a CI module for testing Prelec's Compound Invariance axiom.
+
+Terminology note: the module formerly described as `utility-curvature` is now called the PWF module, because it is used to construct implied PWFs while estimating/controlling utility curvature. The module formerly described as Probability Weighting / PW is now called the CI module, because its Step 4 response is used to evaluate Compound Invariance. Code paths, storage keys, API routes, table names, and CSV fields now use the PWF/CI terminology.
 
 ## Vercel + Neon Deployment
 
@@ -54,16 +56,25 @@ ephemeral and experiment results will be lost.
 
 The API creates tables automatically on first database use:
 
-- `prob_sessions`: one row per experiment session, including generated trials
-- `trial_results`: one row per trial result
+- `experiment_sessions`: one row per experiment session, including generated CI trials
+- `ci_results`: one row per CI trial result
+- `pwf_results`: one row per PWF module task result
 
-`trial_results` has a unique constraint on `(session_id, trial)`, so accidental
-double submission updates the existing trial row instead of creating duplicates.
+`ci_results` has a unique constraint on `(session_id, trial)`, and
+`pwf_results` has a unique constraint on `(session_id, pwf_trial)`, so accidental
+double submission updates the existing row instead of creating duplicates.
+
+If older deployment tables are present, the schema setup copies legacy
+`prob_sessions`, `trial_results`, and `utility_curvature_results` rows into the
+new canonical tables.
 
 ## Useful Endpoints
 
 - `POST /api/session/start`
-- `POST /api/results`
-- `GET /api/results/{student_id}/csv`
-- `GET /api/results/summary`
+- `POST /api/ci-results`
+- `POST /api/pwf-results`
+- `POST /api/session/{session_id}/pwf-complete`
+- `GET /api/ci-results/{student_id}/csv`
+- `GET /api/pwf-results/{student_id}/csv`
+- `GET /api/ci-results/summary`
 - `GET /api/health`

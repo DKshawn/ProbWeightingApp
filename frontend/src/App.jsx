@@ -4,7 +4,7 @@ import Step2Screen from "./components/Step2Screen";
 import Step3Screen from "./components/Step3Screen";
 import Step4Screen from "./components/Step4Screen";
 import BlockBreakScreen from "./components/BlockBreakScreen";
-import UtilityCurvatureFrame from "./components/UtilityCurvatureFrame";
+import PwfFrame from "./components/PwfFrame";
 import FinishScreen from "./components/FinishScreen";
 import "./App.css";
 
@@ -18,9 +18,9 @@ export default function App() {
     stepData,
     loading,
     error,
-    handleUtilityCurvatureStart,
-    handleUtilityCurvatureRecord,
-    handleUtilityCurvatureComplete,
+    handlePwfStart,
+    handlePwfRecord,
+    handlePwfComplete,
     submitStep1,
     submitStep2,
     submitStep3,
@@ -33,10 +33,10 @@ export default function App() {
   switch (currentStep) {
     case 0:
       return (
-        <UtilityCurvatureFrame
-          onStart={handleUtilityCurvatureStart}
-          onRecord={handleUtilityCurvatureRecord}
-          onComplete={handleUtilityCurvatureComplete}
+        <PwfFrame
+          onStart={handlePwfStart}
+          onRecord={handlePwfRecord}
+          onComplete={handlePwfComplete}
           loading={loading}
           error={error}
         />

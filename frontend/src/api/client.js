@@ -40,8 +40,8 @@ export async function startSession(studentId, name, studyMode = "full") {
   return res.json();
 }
 
-export async function saveResult(data) {
-  const res = await fetch(`${BASE_URL}/api/results`, {
+export async function saveCiResult(data) {
+  const res = await fetch(`${BASE_URL}/api/ci-results`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -49,6 +49,17 @@ export async function saveResult(data) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(formatApiError(err, "結果の保存に失敗しました"));
+  }
+  return res.json();
+}
+
+export async function completePwfSession(sessionId) {
+  const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/pwf-complete`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(err, "PWF 完了状態の保存に失敗しました"));
   }
   return res.json();
 }
@@ -66,27 +77,27 @@ export async function saveUtilityResults(results) {
   return res.json();
 }
 
-export async function saveUtilityCurvatureResults(results) {
-  const res = await fetch(`${BASE_URL}/api/utility-curvature-results`, {
+export async function savePwfResults(results) {
+  const res = await fetch(`${BASE_URL}/api/pwf-results`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ results }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(err, "Utility curvature 結果の保存に失敗しました"));
+    throw new Error(formatApiError(err, "PWF 結果の保存に失敗しました"));
   }
   return res.json();
 }
 
-export function getCsvUrl(studentId) {
-  return `${BASE_URL}/api/results/${encodeURIComponent(studentId)}/csv`;
+export function getCiCsvUrl(studentId) {
+  return `${BASE_URL}/api/ci-results/${encodeURIComponent(studentId)}/csv`;
 }
 
 export function getUtilityCsvUrl(studentId) {
   return `${BASE_URL}/api/utility-results/${encodeURIComponent(studentId)}/csv`;
 }
 
-export function getUtilityCurvatureCsvUrl(studentId) {
-  return `${BASE_URL}/api/utility-curvature-results/${encodeURIComponent(studentId)}/csv`;
+export function getPwfCsvUrl(studentId) {
+  return `${BASE_URL}/api/pwf-results/${encodeURIComponent(studentId)}/csv`;
 }
