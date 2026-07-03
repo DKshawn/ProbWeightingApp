@@ -133,7 +133,7 @@ PROB_GRID = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
 AMOUNT_GRID = list(range(10, 110, 10))  # 10〜100（10刻み）
 ```
 
-CI module では、学籍番号尾号が偶数なら high amount（10倍）、奇数なら low amount（1倍）を割り当てる。
+CI module では、学籍番号尾号が偶数なら high amount（100倍）、奇数なら low amount（1倍）を割り当てる。
 
 ### 試行生成の制約
 ```python
@@ -170,7 +170,7 @@ def generate_trial(N, amount_multiplier):
 | N | integer | 累乗数（2または3） |
 | student_id_last_digit | string | 学籍番号尾号 |
 | amount_level | string | CI 金額水準（low/high） |
-| amount_multiplier | float | CI 金額倍率（1または10） |
+| amount_multiplier | float | CI 金額倍率（1または100） |
 | p | float | 確率p |
 | q | float | 確率q |
 | r | float | 確率r |

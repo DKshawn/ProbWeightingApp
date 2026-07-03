@@ -23,7 +23,7 @@ def assign_ci_amount_level(student_id: str) -> dict:
     return {
         "student_id_last_digit": last_digit_text,
         "amount_level": "high" if is_high_amount else "low",
-        "amount_multiplier": 10 if is_high_amount else 1,
+        "amount_multiplier": 100 if is_high_amount else 1,
     }
 
 
