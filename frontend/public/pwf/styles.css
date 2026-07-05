@@ -702,6 +702,131 @@ button, input {
   justify-content: flex-end;
 }
 
+.feedback-card {
+  padding: 18px 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.feedback-details {
+  border: 1px solid #d9e2ef;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8fbff;
+}
+
+.feedback-summary {
+  min-height: 64px;
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.feedback-summary::-webkit-details-marker {
+  display: none;
+}
+
+.feedback-summary-label {
+  color: #334155;
+  font-weight: 800;
+}
+
+.feedback-total {
+  color: #0f172a;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.feedback-total.zero {
+  color: #dc2626;
+}
+
+.feedback-toggle {
+  min-width: 58px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #1e3a8a;
+  font-size: 0.86rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.feedback-details[open] .feedback-toggle {
+  background: #3a86ff;
+  color: #fff;
+}
+
+.feedback-zero-reasons {
+  padding: 12px 16px;
+  border-top: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #dc2626;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.feedback-zero-reasons + .feedback-detail-list {
+  border-top-color: #fecaca;
+}
+
+.feedback-detail-list {
+  padding: 12px;
+  border-top: 1px solid #d9e2ef;
+  display: grid;
+  gap: 8px;
+  background: #fff;
+}
+
+.feedback-item {
+  padding: 10px 12px;
+  border: 1px solid #e5edf6;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  background: #fff;
+}
+
+.feedback-item-main,
+.feedback-item-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.feedback-item-main span,
+.feedback-item-result span {
+  color: #64748b;
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+
+.feedback-item-result {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.feedback-item-result strong {
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+.feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 840px) {
   .config-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -780,6 +905,17 @@ button, input {
   .btn-primary,
   .btn-secondary {
     width: 100%;
+  }
+
+  .feedback-summary,
+  .feedback-item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .feedback-toggle,
+  .feedback-item-result {
+    text-align: left;
   }
 
   .memory-digit-row {

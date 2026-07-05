@@ -155,6 +155,15 @@ function createBisectionTask(taskId, pHigh, pLow, aHigh, aLow, bLow, low, high, 
     optionA: `${pHigh}の確率で ${formatYen(aHigh * m)}、${pLow}の確率で ${formatYen(aLow * m)}`,
     optionBPrefix: `${pHigh}の確率で`,
     optionBSuffix: `${pLow}の確率で ${formatYen(bLow * m)}`,
+    settlement: {
+      optionA: [
+        { probability: parseProbabilityValue(pHigh), amount: roundYen(aHigh * m), label: `${pHigh}: ${formatYen(aHigh * m)}` },
+        { probability: parseProbabilityValue(pLow), amount: roundYen(aLow * m), label: `${pLow}: ${formatYen(aLow * m)}` },
+      ],
+      optionBHighProbability: parseProbabilityValue(pHigh),
+      optionBLowProbability: parseProbabilityValue(pLow),
+      optionBLowAmount: roundYen(bLow * m),
+    },
     unit: "JPY",
     low: low * m,
     high: high * m,
@@ -289,6 +298,7 @@ function restoreState(expectedParticipant = "") {
     "memoryPreRecall",
     "task",
     "memoryPostRecall",
+    "feedback",
     "finish",
   ].includes(saved.phase)
     ? saved.phase
@@ -335,6 +345,7 @@ function render() {
   if (state.phase === "memoryPreRecall") return renderMemoryRecall("pre");
   if (state.phase === "task") return renderTask();
   if (state.phase === "memoryPostRecall") return renderMemoryRecall("post");
+  if (state.phase === "feedback") return renderFeedback();
   return renderFinish();
 }
 
@@ -864,7 +875,7 @@ function submitMemoryRecall(stage) {
     challenge.postResponseTimeMs = challenge.postStartedAt ? now - challenge.postStartedAt : null;
     challenge.postCompleted = true;
     updateCurrentMemoryRecord();
-    advanceToNextTask();
+    showCurrentTaskFeedback();
     return;
   }
   challenge.preInput = value;
@@ -972,6 +983,82 @@ function renderTask() {
   `;
   bindTaskHandlers(block, task, { practice: false });
   startTaskTimerIfNeeded();
+}
+
+function renderFeedback() {
+  const block = currentBlock();
+  const record = currentFeedbackRecord();
+  const feedback = record?.payload?.feedback;
+  if (!feedback) {
+    advanceToNextTask();
+    return;
+  }
+  const totalTasks = block.tasks.length;
+  const progress = Math.round(((state.taskIndex + 1) / totalTasks) * 100);
+  app.innerHTML = `
+    <main class="screen">
+      <div class="progress-bar-wrapper">
+        <div class="progress-info">
+          <span>課題 ${state.taskIndex + 1} / ${totalTasks}</span>
+          <span class="block-label">${escapeHtml(block.title)} | ${escapeHtml(block.label)}</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
+      </div>
+      <section class="feedback-card">
+        <div class="step-label">抽選結果</div>
+        <h3 class="question-title">この課題の結果</h3>
+        <details class="feedback-details">
+          <summary class="feedback-summary">
+            <span class="feedback-summary-label">獲得金額</span>
+            <strong class="feedback-total ${feedback.penalty_applied ? "zero" : ""}">${escapeHtml(formatYen(feedback.total_amount))}</strong>
+            <span class="feedback-toggle">詳細</span>
+          </summary>
+          ${renderFeedbackPenaltyReasons(feedback)}
+          <div class="feedback-detail-list">
+            ${renderFeedbackItems(feedback.items)}
+          </div>
+        </details>
+        <div class="feedback-actions">
+          <button class="btn-primary" id="continueAfterFeedback" type="button">次へ進む</button>
+        </div>
+      </section>
+    </main>
+  `;
+  document.getElementById("continueAfterFeedback").addEventListener("click", continueAfterFeedback);
+}
+
+function renderFeedbackPenaltyReasons(feedback) {
+  const reasons = Array.isArray(feedback?.penalty_reasons) ? feedback.penalty_reasons : [];
+  if (!reasons.length) return "";
+  return `
+    <div class="feedback-zero-reasons">
+      ${reasons.map((reason) => `<p>${escapeHtml(reason)}</p>`).join("")}
+    </div>
+  `;
+}
+
+function renderFeedbackItems(items = []) {
+  if (!items.length) {
+    return `<p class="muted">この課題の抽選明細はありません。</p>`;
+  }
+  return items.map((item) => `
+    <div class="feedback-item">
+      <div class="feedback-item-main">
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.selected_label)}: ${escapeHtml(item.selected_option)}</span>
+      </div>
+      <div class="feedback-item-result">
+        <span>${escapeHtml(item.outcome_label)}</span>
+        <strong>${escapeHtml(formatYen(item.reward_amount))}</strong>
+      </div>
+    </div>
+  `).join("");
+}
+
+function currentFeedbackRecord() {
+  return [...state.records].reverse().find((record) =>
+    record.block_id === currentBlock().id && Number(record.task_index) === state.taskIndex + 1
+  );
 }
 
 function renderModePanel() {
@@ -1686,6 +1773,7 @@ function recordTask(block, task, payload) {
   const taskMode = currentTaskMode();
   const timeOverSeconds = taskMode === MODE_TIME_PRESSURE ? exceededTaskSeconds() : "";
   const memoryFields = memoryRecordFields();
+  const feedback = buildTaskFeedback(task, payload);
   const record = {
     pwf_trial: state.records.length + 1,
     participant: state.participant,
@@ -1710,11 +1798,13 @@ function recordTask(block, task, payload) {
     prompt: task.prompt,
     payload: {
       ...payload,
+      feedback,
       memory: memoryPayloadFields(memoryFields),
     },
     response_time_ms: state.taskStartedAt ? Date.now() - state.taskStartedAt : null,
     timestamp: new Date().toISOString(),
   };
+  record.payload.feedback = applyFeedbackPenalties(record.payload.feedback, feedbackPenaltyReasons(record));
   state.records.push(record);
   state.error = "";
   saveState();
@@ -1724,6 +1814,244 @@ function recordTask(block, task, payload) {
     assignment: state.assignment,
     record,
   });
+}
+
+function buildTaskFeedback(task, payload) {
+  const items = buildFeedbackItems(task, payload);
+  const totalAmount = roundYen(items.reduce((sum, item) => sum + Number(item.reward_amount ?? 0), 0));
+  return {
+    currency: "JPY",
+    raw_total_amount: totalAmount,
+    total_amount: totalAmount,
+    item_count: items.length,
+    items,
+    penalty_applied: false,
+    penalty_reasons: [],
+    settled_at: new Date().toISOString(),
+  };
+}
+
+function applyFeedbackPenalties(feedback, reasons) {
+  const penaltyReasons = (reasons || []).filter(Boolean);
+  const rawTotal = Number.isFinite(Number(feedback?.raw_total_amount))
+    ? roundYen(feedback.raw_total_amount)
+    : roundYen(feedback?.total_amount ?? 0);
+  return {
+    ...feedback,
+    raw_total_amount: rawTotal,
+    total_amount: penaltyReasons.length ? 0 : rawTotal,
+    penalty_applied: penaltyReasons.length > 0,
+    penalty_reasons: penaltyReasons,
+  };
+}
+
+function feedbackPenaltyReasons(record) {
+  const reasons = [];
+  if (record.task_mode === MODE_TIME_PRESSURE && record.timed_out) {
+    reasons.push("制限時間を超過したため、獲得金額は ¥0 です。");
+  }
+  if (record.has_memory_task && (record.memory_pre_correct === false || record.memory_post_correct === false)) {
+    reasons.push("数字記憶の回答が正しくなかったため、獲得金額は ¥0 です。");
+  }
+  return reasons;
+}
+
+function buildFeedbackItems(task, payload) {
+  if (task.type === "mpl") return buildMplFeedbackItems(task, payload);
+  if (task.type === "bisection") return buildBisectionFeedbackItems(task, payload);
+  if (task.type === "probabilityBisection") return buildProbabilityBisectionFeedbackItems(task, payload);
+  if (task.type === "probabilityMatch") return buildProbabilityMatchFeedbackItems(task, payload);
+  if (task.type === "inputMatch" || task.type === "ceMenu") return buildDeterministicFeedbackItems(task, payload);
+  return [];
+}
+
+function buildMplFeedbackItems(task, payload) {
+  const choices = payload.choices || {};
+  return task.rows.map((row) => {
+    const choice = choices[row.row];
+    const selectedOption = choice === "A" ? row.optionA : row.optionB;
+    const settlement = choice === "A"
+      ? settleLottery(parseLotteryText(row.optionA))
+      : settleCertain(row.amount);
+    return buildFeedbackItem({
+      label: `行 ${row.row}`,
+      selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
+      selectedOption,
+      settlement,
+    });
+  });
+}
+
+function buildBisectionFeedbackItems(task, payload) {
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  return history.map((entry) => {
+    const choice = entry.choice;
+    const candidate = roundYen(entry.candidate);
+    const outcomes = choice === "A"
+      ? task.settlement.optionA
+      : [
+          { probability: task.settlement.optionBHighProbability, amount: candidate },
+          { probability: task.settlement.optionBLowProbability, amount: task.settlement.optionBLowAmount },
+        ];
+    const selectedOption = choice === "A"
+      ? task.optionA
+      : `${task.optionBPrefix} ${formatYen(candidate)}、${task.optionBSuffix}`;
+    return buildFeedbackItem({
+      label: `比較 ${entry.round}`,
+      selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
+      selectedOption,
+      settlement: settleLottery(outcomes),
+    });
+  });
+}
+
+function buildProbabilityBisectionFeedbackItems(_task, payload) {
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  return history.map((entry) => {
+    const choice = entry.choice;
+    const sureAmount = roundYen(entry.sure_amount ?? payload.sure_amount);
+    const highAmount = roundYen(entry.high_amount ?? payload.high_amount);
+    const baselineAmount = roundYen(entry.baseline_amount ?? payload.baseline_amount);
+    const candidate = Number(entry.candidate);
+    const settlement = choice === "A"
+      ? settleCertain(sureAmount)
+      : settleLottery([
+          { probability: candidate, amount: highAmount },
+          { probability: 1 - candidate, amount: baselineAmount },
+        ]);
+    const selectedOption = choice === "A"
+      ? `${formatYen(sureAmount)} を確実に受け取る`
+      : `${formatProbability(candidate)} の確率で ${formatYen(highAmount)}、それ以外は ${formatYen(baselineAmount)}`;
+    return buildFeedbackItem({
+      label: `確率比較 ${entry.round}`,
+      selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
+      selectedOption,
+      settlement,
+    });
+  });
+}
+
+function buildProbabilityMatchFeedbackItems(task, payload) {
+  const probability = Number(payload.value);
+  const highAmount = roundYen(payload.high_amount);
+  const baselineAmount = roundYen(payload.baseline_amount ?? task.baselineAmount);
+  const settlement = settleLottery([
+    { probability, amount: highAmount },
+    { probability: 1 - probability, amount: baselineAmount },
+  ]);
+  return [buildFeedbackItem({
+    label: "確率入力",
+    selectedLabel: "入力された確率",
+    selectedOption: `${formatProbability(probability)} の確率で ${formatYen(highAmount)}、それ以外は ${formatYen(baselineAmount)}`,
+    settlement,
+  })];
+}
+
+function buildDeterministicFeedbackItems(_task, payload) {
+  const amount = payload.ce_estimate ?? payload.estimate ?? payload.value ?? 0;
+  return [buildFeedbackItem({
+    label: "回答",
+    selectedLabel: "入力値",
+    selectedOption: formatYen(amount),
+    settlement: settleCertain(amount),
+  })];
+}
+
+function buildFeedbackItem({ label, selectedLabel, selectedOption, settlement }) {
+  return {
+    label,
+    selected_label: selectedLabel,
+    selected_option: selectedOption,
+    outcome_probability: settlement.probability,
+    random_value: settlement.randomValue,
+    outcome_label: settlement.outcomeLabel,
+    reward_amount: settlement.rewardAmount,
+  };
+}
+
+function settleCertain(amount) {
+  const numeric = Number(amount);
+  const rewardAmount = Number.isFinite(numeric) ? roundYen(numeric) : 0;
+  return {
+    probability: 1,
+    randomValue: "",
+    outcomeLabel: `確実に ${formatYen(rewardAmount)}`,
+    rewardAmount,
+  };
+}
+
+function settleLottery(outcomes) {
+  const normalized = normalizeOutcomes(outcomes);
+  if (!normalized.length) return settleCertain(0);
+  const totalProbability = normalized.reduce((sum, outcome) => sum + outcome.probability, 0);
+  const randomValue = Math.random();
+  const target = randomValue * totalProbability;
+  let cumulative = 0;
+  let selected = normalized[normalized.length - 1];
+  for (const outcome of normalized) {
+    cumulative += outcome.probability;
+    if (target <= cumulative) {
+      selected = outcome;
+      break;
+    }
+  }
+  const rewardAmount = roundYen(selected.amount);
+  return {
+    probability: selected.probability,
+    randomValue: Math.round(randomValue * 10000) / 10000,
+    outcomeLabel: `${formatOutcomeProbability(selected.probability)} の抽選で ${formatYen(rewardAmount)}`,
+    rewardAmount,
+  };
+}
+
+function normalizeOutcomes(outcomes) {
+  return (outcomes || [])
+    .map((outcome) => ({
+      probability: Number(outcome.probability),
+      amount: roundYen(outcome.amount),
+    }))
+    .filter((outcome) => Number.isFinite(outcome.probability) && outcome.probability > 0 && Number.isFinite(outcome.amount));
+}
+
+function parseLotteryText(text) {
+  const match = String(text ?? "").match(/([0-9.]+)%の確率で\s*([^、]+)、\s*([0-9.]+)%の確率で\s*(.+)$/);
+  if (!match) return [];
+  return [
+    { probability: parseProbabilityValue(`${match[1]}%`), amount: parseYenAmount(match[2]) },
+    { probability: parseProbabilityValue(`${match[3]}%`), amount: parseYenAmount(match[4]) },
+  ];
+}
+
+function parseProbabilityValue(value) {
+  const text = String(value ?? "").trim();
+  const fraction = text.match(/^([0-9.]+)\s*\/\s*([0-9.]+)$/);
+  if (fraction) {
+    const numerator = Number(fraction[1]);
+    const denominator = Number(fraction[2]);
+    return denominator ? numerator / denominator : 0;
+  }
+  const percent = text.match(/^([0-9.]+)%$/);
+  if (percent) return Number(percent[1]) / 100;
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric)) return 0;
+  return numeric > 1 ? numeric / 100 : numeric;
+}
+
+function parseYenAmount(value) {
+  const text = String(value ?? "")
+    .replace(/[０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/,/g, "");
+  const match = text.match(/(-)?\s*¥?\s*([0-9.]+)/);
+  if (!match) return 0;
+  const sign = match[1] ? -1 : 1;
+  return roundYen(sign * Number(match[2]));
+}
+
+function formatOutcomeProbability(probability) {
+  const percent = Number(probability) * 100;
+  if (!Number.isFinite(percent)) return "";
+  const rounded = Math.round(percent * 100) / 100;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)}%`;
 }
 
 function nextTask() {
@@ -1736,6 +2064,21 @@ function nextTask() {
     scrollToTopAfterRender();
     return;
   }
+  showCurrentTaskFeedback();
+}
+
+function showCurrentTaskFeedback() {
+  state.phase = "feedback";
+  state.runtime = null;
+  state.taskTimedOut = false;
+  state.memoryChallenge = null;
+  state.error = "";
+  saveState();
+  render();
+  scrollToTopAfterRender();
+}
+
+function continueAfterFeedback() {
   advanceToNextTask();
 }
 
@@ -1815,6 +2158,7 @@ function updateCurrentMemoryRecord() {
       memory: memoryPayloadFields(fields),
     },
   });
+  record.payload.feedback = applyFeedbackPenalties(record.payload.feedback, feedbackPenaltyReasons(record));
   record.timestamp = new Date().toISOString();
   state.error = "";
   saveState();
@@ -2007,6 +2351,11 @@ function downloadCsv(filename, data) {
     "switch_status",
     "monotonic",
     "response_time_ms",
+    "reward_total_amount",
+    "reward_raw_total_amount",
+    "reward_item_count",
+    "reward_penalty_reasons",
+    "reward_settled_at",
     "timestamp",
   ];
   const rows = data.map((record) => ({
@@ -2048,6 +2397,11 @@ function downloadCsv(filename, data) {
     switch_status: record.payload.switch_status ?? "",
     monotonic: record.payload.monotonic ?? "",
     response_time_ms: record.response_time_ms,
+    reward_total_amount: record.payload.feedback?.total_amount ?? "",
+    reward_raw_total_amount: record.payload.feedback?.raw_total_amount ?? "",
+    reward_item_count: record.payload.feedback?.item_count ?? "",
+    reward_penalty_reasons: (record.payload.feedback?.penalty_reasons ?? []).join("; "),
+    reward_settled_at: record.payload.feedback?.settled_at ?? "",
     timestamp: record.timestamp,
   }));
   const csv = [
@@ -2092,6 +2446,8 @@ function runSmokeTest() {
 
   const failures = [];
   const expectedRecords = BASE_BLOCKS.reduce((sum, block) => sum + block.tasks.length, 0);
+  let forcedTimePenalty = false;
+  let forcedMemoryPenalty = false;
 
   BASE_BLOCKS.forEach((_baseBlock, blockIndex) => {
     state.phase = "task";
@@ -2112,9 +2468,14 @@ function runSmokeTest() {
     }
     block.tasks.forEach((task, taskIndex) => {
       state.taskIndex = taskIndex;
-      state.taskStartedAt = Date.now();
-      state.taskTimedOut = false;
-      state.memoryChallenge = smokeMemoryChallengeIfNeeded(taskIndex);
+      const mode = currentTaskMode();
+      const shouldForceTimePenalty = !forcedTimePenalty && mode === MODE_TIME_PRESSURE;
+      const shouldForceMemoryPenalty = !forcedMemoryPenalty && mode === MODE_NUMBER_MEMORY;
+      state.taskStartedAt = shouldForceTimePenalty ? Date.now() - (TIME_PRESSURE_SECONDS + 2) * 1000 : Date.now();
+      state.taskTimedOut = shouldForceTimePenalty;
+      state.memoryChallenge = smokeMemoryChallengeIfNeeded(taskIndex, shouldForceMemoryPenalty);
+      if (shouldForceTimePenalty) forcedTimePenalty = true;
+      if (shouldForceMemoryPenalty) forcedMemoryPenalty = true;
       try {
         recordSmokeTask(block, task);
       } catch (error) {
@@ -2129,6 +2490,18 @@ function runSmokeTest() {
   });
   if (state.records.length !== expectedRecords) {
     failures.push(`record count ${state.records.length}, expected ${expectedRecords}`);
+  }
+  if (state.records.some((record) => !record.payload?.feedback || !Number.isFinite(Number(record.payload.feedback.total_amount)))) {
+    failures.push("some records are missing feedback settlement totals");
+  }
+  if (state.records.some((record) => Number(record.payload?.feedback?.item_count ?? 0) < 1)) {
+    failures.push("some records are missing feedback settlement items");
+  }
+  if (!state.records.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.payload?.feedback?.penalty_applied && record.payload.feedback.total_amount === 0)) {
+    failures.push("time pressure zero-reward penalty was not covered");
+  }
+  if (!state.records.some((record) => record.task_mode === MODE_NUMBER_MEMORY && record.payload?.feedback?.penalty_applied && record.payload.feedback.total_amount === 0)) {
+    failures.push("number memory zero-reward penalty was not covered");
   }
   BASE_BLOCKS.forEach((block) => {
     const blockRecords = state.records.filter((record) => record.block_id === block.id);
@@ -2165,10 +2538,11 @@ function countModes(modes) {
   }, {});
 }
 
-function smokeMemoryChallengeIfNeeded(taskIndex) {
+function smokeMemoryChallengeIfNeeded(taskIndex, forceWrong = false) {
   if (currentTaskMode() !== MODE_NUMBER_MEMORY) return null;
   const now = Date.now();
   const number = "12345";
+  const input = forceWrong ? "12340" : number;
   return {
     taskIndex,
     number,
@@ -2177,12 +2551,12 @@ function smokeMemoryChallengeIfNeeded(taskIndex) {
     displayStartedAt: now - NUMBER_MEMORY_SECONDS * 1000,
     displayEndedAt: now,
     preStartedAt: now - 1200,
-    preInput: number,
-    preCorrect: true,
+    preInput: input,
+    preCorrect: !forceWrong,
     preResponseTimeMs: 1200,
     postStartedAt: now - 900,
-    postInput: number,
-    postCorrect: true,
+    postInput: input,
+    postCorrect: !forceWrong,
     postResponseTimeMs: 900,
     postCompleted: true,
   };

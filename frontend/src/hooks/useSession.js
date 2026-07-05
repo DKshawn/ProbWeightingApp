@@ -29,9 +29,16 @@ function firstUnansweredTrialIndex(trials, savedTrialResults) {
 }
 
 function stepForTrialResume(trials, trialIndex) {
-  if (!trials.length || trialIndex >= trials.length) return 5;
+  if (!trials.length) return 5;
+  if (trialIndex >= trials.length) return 7;
   if (trialIndex > 0 && trials[trialIndex]?.block !== trials[trialIndex - 1]?.block) return 6;
   return 1;
+}
+
+function upsertPwfRecord(records, nextRecord) {
+  const key = `${nextRecord.session_id ?? ""}:${nextRecord.pwf_trial}`;
+  const withoutDuplicate = records.filter((record) => `${record.session_id ?? ""}:${record.pwf_trial}` !== key);
+  return [...withoutDuplicate, nextRecord].sort((a, b) => Number(a.pwf_trial) - Number(b.pwf_trial));
 }
 
 export function useSession() {
@@ -41,9 +48,10 @@ export function useSession() {
   const [studyMode, setStudyMode] = useState(getStudyModeFromUrl());
   const [experimentMode, setExperimentMode] = useState("normal");
   const [timePressureSeconds, setTimePressureSeconds] = useState(0);
+  const [pwfRecords, setPwfRecords] = useState([]);
   const [trials, setTrials] = useState([]);
   const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [currentStep, setCurrentStep] = useState(0); // 0=pwf,1,2,3,4,5=finish,6=block_break
+  const [currentStep, setCurrentStep] = useState(0); // 0=pwf,1,2,3,4,5=finish,6=block_break,7=pwf_settlement
   const [stepData, setStepData] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -94,6 +102,7 @@ export function useSession() {
         const resolvedStudyMode = data.study_mode || requestedStudyMode;
         const resolvedTrials = data.trials || [];
         const savedTrialResults = data.saved_ci_results || [];
+        const savedPwfResults = data.saved_pwf_results || [];
         const pwfCompleted = Boolean(data.pwf_completed) || savedTrialResults.length > 0;
         const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
         const session = {
@@ -105,6 +114,7 @@ export function useSession() {
           experimentMode: data.experiment_mode || "normal",
           timePressureSeconds: data.time_pressure_seconds || 0,
           savedTrialResults,
+          savedPwfResults,
           pwfCompleted,
         };
 
@@ -116,6 +126,7 @@ export function useSession() {
         setStudyMode(session.studyMode);
         setExperimentMode(session.experimentMode);
         setTimePressureSeconds(session.timePressureSeconds);
+        setPwfRecords(session.savedPwfResults);
         setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
         if (pwfCompleted) {
@@ -159,6 +170,7 @@ export function useSession() {
       const session = await ensurePwfSession(message);
       const record = buildPwfRecord(message, session);
       await savePwfResults([record]);
+      setPwfRecords((prev) => upsertPwfRecord(prev, record));
     });
 
     pwfSaveQueueRef.current = saveTask.catch(() => {});
@@ -280,7 +292,7 @@ export function useSession() {
         setCurrentStep(6);
       } else if (nextIndex >= totalTrials) {
         setStepData({});
-        setCurrentStep(5);
+        setCurrentStep(7);
       } else {
         setCurrentTrialIndex(nextIndex);
         setStepData({});
@@ -297,8 +309,13 @@ export function useSession() {
     setCurrentStep(1);
   }
 
+  function continueToFinish() {
+    setCurrentStep(5);
+  }
+
   return {
     studentId,
+    pwfRecords,
     trials,
     currentTrialIndex,
     currentStep,
@@ -314,5 +331,6 @@ export function useSession() {
     submitStep3,
     submitStep4,
     startNextBlock,
+    continueToFinish,
   };
 }

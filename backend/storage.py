@@ -760,6 +760,7 @@ def _optional_bool(value: Any) -> bool | None:
 
 def _flatten_pwf_record(record: dict[str, Any], timestamp: datetime) -> dict[str, Any]:
     payload = record.get("payload") or {}
+    feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
     estimate = (
         payload.get("ce_estimate")
         if payload.get("ce_estimate") is not None
@@ -811,6 +812,11 @@ def _flatten_pwf_record(record: dict[str, Any], timestamp: datetime) -> dict[str
         "switch_status": payload.get("switch_status", ""),
         "monotonic": _optional_bool(payload.get("monotonic")),
         "response_time_ms": _optional_int(record.get("response_time_ms")),
+        "reward_total_amount": _optional_float(feedback.get("total_amount")),
+        "reward_raw_total_amount": _optional_float(feedback.get("raw_total_amount")),
+        "reward_item_count": _optional_int(feedback.get("item_count")),
+        "reward_penalty_reasons": "; ".join(feedback.get("penalty_reasons", []) or []),
+        "reward_settled_at": feedback.get("settled_at", ""),
         "prompt": record.get("prompt", ""),
         "payload": payload,
         "source_timestamp": record.get("timestamp", ""),

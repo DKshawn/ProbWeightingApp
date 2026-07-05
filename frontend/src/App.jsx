@@ -5,12 +5,14 @@ import Step3Screen from "./components/Step3Screen";
 import Step4Screen from "./components/Step4Screen";
 import BlockBreakScreen from "./components/BlockBreakScreen";
 import PwfFrame from "./components/PwfFrame";
+import PwfSettlementScreen from "./components/PwfSettlementScreen";
 import FinishScreen from "./components/FinishScreen";
 import "./App.css";
 
 export default function App() {
   const {
     studentId,
+    pwfRecords,
     trials,
     currentTrialIndex,
     currentStep,
@@ -26,6 +28,7 @@ export default function App() {
     submitStep3,
     submitStep4,
     startNextBlock,
+    continueToFinish,
   } = useSession();
 
   const totalTrials = trials.length;
@@ -84,6 +87,8 @@ export default function App() {
       return <FinishScreen studentId={studentId} />;
     case 6:
       return <BlockBreakScreen nextTrial={currentTrial} onContinue={startNextBlock} />;
+    case 7:
+      return <PwfSettlementScreen records={pwfRecords} onNext={continueToFinish} />;
     default:
       return null;
   }
