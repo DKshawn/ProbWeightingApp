@@ -230,6 +230,13 @@ function formatAmount(value, unit = "") {
   return `${unit}${unit === "years" ? "" : " "}${rounded}${unit === "years" ? " years" : ""}`;
 }
 
+function renderTextWithFractions(value) {
+  return escapeHtml(value).replace(
+    /\b(\d+)\/(\d+)\b/g,
+    '<span class="math-fraction"><span class="fraction-top">$1</span><span class="fraction-bottom">$2</span></span>',
+  );
+}
+
 function roundYen(value) {
   return Math.round(Number(value));
 }
@@ -337,6 +344,24 @@ function initializeNavigationHistory() {
   window.addEventListener("popstate", (event) => {
     if (!event.state?.pwfScreen) return;
     returnToSetupScreen();
+  });
+}
+
+function initializeKeyboardShortcuts() {
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.repeat) return;
+    if (event.key !== "Enter" && event.key !== "Return") return;
+    const button = document.getElementById("continueBisection");
+    if (!button || button.disabled) return;
+    const active = document.activeElement;
+    const canSubmitFromKeyboard =
+      !active ||
+      active === document.body ||
+      active === document.documentElement ||
+      active === button;
+    if (!canSubmitFromKeyboard) return;
+    event.preventDefault();
+    button.click();
   });
 }
 
@@ -792,7 +817,7 @@ function renderMemoryRecall(stage) {
     <main class="screen narrow-screen">
       <section class="center-card">
         <div class="step-label">数字記憶</div>
-        <h2>${isPost ? "先ほどの数字をもう一度入力してください" : "いま表示された数字を入力してください"}</h2>
+        <h2>${isPost ? "先ほどの数字をもう一度入力してください" : "表示された数字を入力してください"}</h2>
         <form class="setup-form" id="memoryRecallForm">
           <div class="field memory-digit-field">
             <label>5桁の数字</label>
@@ -813,9 +838,7 @@ function renderMemoryRecall(stage) {
             </div>
           </div>
           ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
-          <button class="btn-primary" type="submit">${isPost ? "次へ進む" : "課題へ進む"}</button>
         </form>
-        ${isPost ? `<p class="muted">課題 ${state.taskIndex + 1}: ${escapeHtml(taskTypeLabel(task.type))}</p>` : ""}
       </section>
     </main>
   `;
@@ -823,7 +846,7 @@ function renderMemoryRecall(stage) {
     event.preventDefault();
     submitMemoryRecall(stage);
   });
-  bindMemoryDigitInputs();
+  bindMemoryDigitInputs(stage);
 }
 
 function submitMemoryRecall(stage) {
@@ -857,17 +880,19 @@ function submitMemoryRecall(stage) {
   scrollToTopAfterRender();
 }
 
-function bindMemoryDigitInputs() {
+function bindMemoryDigitInputs(stage) {
   const inputs = memoryDigitInputs();
   inputs.forEach((input, index) => {
     input.addEventListener("input", () => {
       const digits = normalizeDigitInput(input.value);
       if (digits.length > 1) {
         fillMemoryDigits(digits, index);
+        maybeSubmitMemoryRecall(stage);
         return;
       }
       input.value = digits;
       if (digits && index < inputs.length - 1) inputs[index + 1].focus();
+      maybeSubmitMemoryRecall(stage);
     });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Backspace" && !input.value && index > 0) {
@@ -890,9 +915,15 @@ function bindMemoryDigitInputs() {
       if (!digits) return;
       event.preventDefault();
       fillMemoryDigits(digits, index);
+      maybeSubmitMemoryRecall(stage);
     });
   });
   inputs[0]?.focus();
+}
+
+function maybeSubmitMemoryRecall(stage) {
+  if (currentMemoryInputValue().length !== NUMBER_MEMORY_DIGITS) return;
+  window.setTimeout(() => submitMemoryRecall(stage), 0);
 }
 
 function memoryDigitInputs() {
@@ -1026,20 +1057,16 @@ function renderBisection(task) {
       <div class="lottery-compare">
         <div class="lottery-box lottery-a">
           <div class="lottery-label">選択肢A</div>
-          <div class="lottery-detail">${escapeHtml(task.optionA)}</div>
+          <div class="lottery-detail">${renderTextWithFractions(task.optionA)}</div>
         </div>
         <div class="vs-label">vs</div>
         <div class="lottery-box lottery-b">
           <div class="lottery-label">選択肢B</div>
-          <div class="lottery-detail">${escapeHtml(task.optionBPrefix)} <strong class="changing-amount">${escapeHtml(formatAmount(runtime.candidate, task.unit))}</strong>${task.optionBSuffix ? `、${escapeHtml(task.optionBSuffix)}` : ""}</div>
+          <div class="lottery-detail">${renderTextWithFractions(task.optionBPrefix)} <strong class="changing-amount">${escapeHtml(formatAmount(runtime.candidate, task.unit))}</strong>${task.optionBSuffix ? `、${renderTextWithFractions(task.optionBSuffix)}` : ""}</div>
         </div>
       </div>
-      <p class="muted">現在の探索範囲: ${escapeHtml(formatAmount(runtime.low, task.unit))} から ${escapeHtml(formatAmount(runtime.high, task.unit))}</p>
       ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
-      <div class="btn-row">
-        <button class="btn-choice" id="chooseA">選択肢Aを選ぶ</button>
-        <button class="btn-choice" id="chooseB">選択肢Bを選ぶ</button>
-      </div>
+      ${renderBisectionActions(runtime)}
     </section>
   `;
 }
@@ -1113,15 +1140,10 @@ function renderProbabilityMatch(task) {
 function renderProbabilityBisection(task) {
   const runtime = state.runtime;
   const amounts = probabilityBisectionAmounts(task);
-  const prev = probabilityReferenceHint([
-    [task.sureTaskId, amounts.sure],
-    [task.highTaskId, amounts.high],
-  ]);
   return `
     <section class="question-box">
       <div class="step-label">確率比較 ${runtime.round} / ${task.rounds}</div>
       <h3 class="question-title">${escapeHtml(task.prompt)}</h3>
-      ${prev ? `<p class="muted">${escapeHtml(prev)}</p>` : ""}
       <div class="lottery-compare">
         <div class="lottery-box lottery-a">
           <div class="lottery-label">選択肢A</div>
@@ -1133,13 +1155,23 @@ function renderProbabilityBisection(task) {
           <div class="lottery-detail"><strong class="changing-amount">${formatProbability(runtime.candidate)}</strong> の確率で ${escapeHtml(amountLabel(amounts.high, task.highTaskId))}、それ以外は ${escapeHtml(formatYen(task.baselineAmount))}</div>
         </div>
       </div>
-      <p class="muted">現在の探索範囲: ${formatProbability(runtime.low)} から ${formatProbability(runtime.high)}</p>
       ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
-      <div class="btn-row">
-        <button class="btn-choice" id="chooseA">選択肢Aを選ぶ</button>
-        <button class="btn-choice" id="chooseB">選択肢Bを選ぶ</button>
-      </div>
+      ${renderBisectionActions(runtime)}
     </section>
+  `;
+}
+
+function renderBisectionActions(runtime) {
+  const selected = runtime.pendingChoice;
+  const nextDisabled = selected ? "" : " disabled";
+  return `
+    <div class="btn-row bisection-actions">
+      <button class="btn-choice choice-a${selected === "A" ? " selected" : ""}" id="chooseA" type="button">選択肢Aを選ぶ</button>
+      <button class="btn-choice choice-b${selected === "B" ? " selected" : ""}" id="chooseB" type="button">選択肢Bを選ぶ</button>
+    </div>
+    <div class="btn-row bisection-next-row">
+      <button class="btn-primary bisection-next" id="continueBisection" type="button"${nextDisabled}>次へ進む</button>
+    </div>
   `;
 }
 
@@ -1187,8 +1219,9 @@ function shouldUseCompactTable(rows) {
 
 function bindTaskHandlers(block, task, options = {}) {
   if (task.type === "bisection") {
-    document.getElementById("chooseA").addEventListener("click", () => submitBisection(block, task, "A", options));
-    document.getElementById("chooseB").addEventListener("click", () => submitBisection(block, task, "B", options));
+    document.getElementById("chooseA").addEventListener("click", () => selectBisectionChoice("A"));
+    document.getElementById("chooseB").addEventListener("click", () => selectBisectionChoice("B"));
+    document.getElementById("continueBisection").addEventListener("click", () => submitBisection(block, task, options));
     return;
   }
   if (task.type === "inputMatch") {
@@ -1206,8 +1239,9 @@ function bindTaskHandlers(block, task, options = {}) {
     return;
   }
   if (task.type === "probabilityBisection") {
-    document.getElementById("chooseA").addEventListener("click", () => submitProbabilityBisection(block, task, "A", options));
-    document.getElementById("chooseB").addEventListener("click", () => submitProbabilityBisection(block, task, "B", options));
+    document.getElementById("chooseA").addEventListener("click", () => selectBisectionChoice("A"));
+    document.getElementById("chooseB").addEventListener("click", () => selectBisectionChoice("B"));
+    document.getElementById("continueBisection").addEventListener("click", () => submitProbabilityBisection(block, task, options));
     return;
   }
   document.querySelectorAll("[data-row][data-choice]").forEach((button) => {
@@ -1237,6 +1271,7 @@ function ensureRuntime(task) {
       high: task.high,
       candidate: midpoint(task.low, task.high),
       round: 1,
+      pendingChoice: "",
       history: [],
     };
   } else if (task.type === "probabilityBisection") {
@@ -1246,6 +1281,7 @@ function ensureRuntime(task) {
       high: task.high,
       candidate: midpointProbability(task.low, task.high),
       round: 1,
+      pendingChoice: "",
       history: [],
     };
   } else {
@@ -1300,8 +1336,32 @@ function submitCeMenu(block, task, options = {}) {
   nextTask();
 }
 
-function submitBisection(block, task, choice, options = {}) {
+function selectBisectionChoice(choice) {
+  if (!state.runtime) return;
+  state.runtime.pendingChoice = choice;
+  state.error = "";
+  render();
+  focusContinueBisectionButton();
+}
+
+function focusContinueBisectionButton() {
+  const button = document.getElementById("continueBisection");
+  if (!button || button.disabled) return;
+  try {
+    button.focus({ preventScroll: true });
+  } catch (_error) {
+    button.focus();
+  }
+}
+
+function submitBisection(block, task, options = {}) {
   const runtime = state.runtime;
+  const choice = runtime.pendingChoice;
+  if (!choice) {
+    state.error = "先に選択肢AまたはBを選んでください。";
+    render();
+    return;
+  }
   const candidate = runtime.candidate;
   const candidateTooLow = choice === "A";
   runtime.history.push({
@@ -1316,6 +1376,7 @@ function submitBisection(block, task, choice, options = {}) {
   } else {
     runtime.high = candidate;
   }
+  runtime.pendingChoice = "";
   if (runtime.round >= task.rounds) {
     const estimate = midpoint(runtime.low, runtime.high);
     if (options.practice) {
@@ -1396,8 +1457,14 @@ function submitProbabilityMatch(block, task, options = {}) {
   nextTask();
 }
 
-function submitProbabilityBisection(block, task, choice, options = {}) {
+function submitProbabilityBisection(block, task, options = {}) {
   const runtime = state.runtime;
+  const choice = runtime.pendingChoice;
+  if (!choice) {
+    state.error = "先に選択肢AまたはBを選んでください。";
+    render();
+    return;
+  }
   const amounts = probabilityBisectionAmounts(task);
   if (!Number.isFinite(amounts.sure) || !Number.isFinite(amounts.high)) {
     state.error = "前の金額回答が見つかりません。ページを更新せず、順番に回答してください。";
@@ -1426,6 +1493,7 @@ function submitProbabilityBisection(block, task, choice, options = {}) {
   } else {
     runtime.high = candidate;
   }
+  runtime.pendingChoice = "";
   if (runtime.round >= task.rounds) {
     const estimate = midpointProbability(runtime.low, runtime.high);
     if (options.practice) {
@@ -2300,5 +2368,6 @@ if (new URLSearchParams(window.location.search).get("smoke") === "1") {
   runSmokeTest();
 } else {
   initializeNavigationHistory();
+  initializeKeyboardShortcuts();
   render();
 }
