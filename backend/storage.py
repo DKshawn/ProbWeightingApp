@@ -51,82 +51,6 @@ def _connect():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
-def _table_exists(cur, table_name: str) -> bool:
-    cur.execute("SELECT to_regclass(%s) AS table_name", (f"public.{table_name}",))
-    row = cur.fetchone()
-    return bool(row and row["table_name"])
-
-
-def _migrate_legacy_tables(cur) -> None:
-    if _table_exists(cur, "prob_sessions"):
-        cur.execute(
-            """
-            INSERT INTO experiment_sessions (
-                session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
-                trials, status, pwf_completed, pwf_completed_at, completed_at, last_seen_at, created_at
-            )
-            SELECT
-                session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
-                trials, status, utility_curvature_completed, utility_curvature_completed_at,
-                completed_at, last_seen_at, created_at
-            FROM prob_sessions
-            ON CONFLICT (session_id) DO NOTHING
-            """
-        )
-
-    if _table_exists(cur, "trial_results"):
-        cur.execute(
-            """
-            INSERT INTO ci_results (
-                session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
-                trial, block, n, student_id_last_digit, amount_level, amount_multiplier,
-                p, q, r, x, x_prime, y, s, y_prime,
-                pn, qn, rn, sn, choice, ci_satisfied, response_time_ms, timed_out, timestamp
-            )
-            SELECT
-                session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
-                trial, block, n, '', 'low', 1,
-                p, q, r, x, x_prime, y, s, y_prime,
-                pn, qn, rn, sn, choice, ci_satisfied, response_time_ms, timed_out, timestamp
-            FROM trial_results
-            ON CONFLICT (session_id, trial) DO NOTHING
-            """
-        )
-
-    if _table_exists(cur, "utility_curvature_results"):
-        cur.execute(
-            """
-            INSERT INTO pwf_results (
-                session_id, student_id, name, study_mode, pwf_trial,
-                participant, assignment_group, assignment_modulus, student_id_last3,
-                student_id_last_digit, amount_level, amount_multiplier,
-                assigned_block_id, block_id, block_title, task_id, is_anchor,
-                task_index, task_type, task_mode, time_limit_seconds, timed_out,
-                time_over_seconds, has_memory_task, memory_digits, memory_seconds,
-                memory_number, memory_input_pre, memory_pre_correct, memory_input_post,
-                memory_post_correct, memory_display_duration_ms, memory_pre_response_time_ms,
-                memory_post_response_time_ms, response_type, estimate, switch_lower, switch_upper,
-                switch_row, switch_direction, switch_status, monotonic,
-                response_time_ms, prompt, payload, source_timestamp, timestamp
-            )
-            SELECT
-                session_id, student_id, name, study_mode, curvature_trial,
-                participant, assignment_group, assignment_modulus, student_id_last3,
-                student_id_last_digit, amount_level, amount_multiplier,
-                assigned_block_id, block_id, block_title, task_id, is_anchor,
-                task_index, task_type, task_mode, time_limit_seconds, timed_out,
-                time_over_seconds, has_memory_task, memory_digits, memory_seconds,
-                memory_number, memory_input_pre, memory_pre_correct, memory_input_post,
-                memory_post_correct, memory_display_duration_ms, memory_pre_response_time_ms,
-                memory_post_response_time_ms, response_type, estimate, switch_lower, switch_upper,
-                switch_row, switch_direction, switch_status, monotonic,
-                response_time_ms, prompt, payload, source_timestamp, timestamp
-            FROM utility_curvature_results
-            ON CONFLICT (session_id, pwf_trial) DO NOTHING
-            """
-        )
-
-
 def ensure_schema() -> None:
     global _schema_ready
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
@@ -367,7 +291,6 @@ def ensure_schema() -> None:
                     WHERE status = 'completed';
                 """
             )
-            _migrate_legacy_tables(cur)
         conn.commit()
     _schema_ready = True
 

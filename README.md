@@ -64,9 +64,10 @@ The API creates tables automatically on first database use:
 `pwf_results` has a unique constraint on `(session_id, pwf_trial)`, so accidental
 double submission updates the existing row instead of creating duplicates.
 
-If older deployment tables are present, the schema setup copies legacy
-`prob_sessions`, `trial_results`, and `utility_curvature_results` rows into the
-new canonical tables.
+Older deployment tables such as `prob_sessions`, `trial_results`, and
+`utility_curvature_results` are treated as retired tables. The app no longer
+reads from or migrates them; new data is written only to the canonical tables
+above.
 
 ## Useful Endpoints
 
