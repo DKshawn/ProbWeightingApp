@@ -2,12 +2,14 @@ const SWITCH_B_TO_A = "B_TO_A";
 const SWITCH_A_TO_B = "A_TO_B";
 const ASSIGNMENT_MODULUS = 3;
 const TIME_PRESSURE_SECONDS = 20;
+const TIME_PRESSURE_TASKS_PER_BLOCK = 5;
 const NUMBER_MEMORY_SECONDS = 5;
 const NUMBER_MEMORY_DIGITS = 5;
+const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-04-ci-amount-level";
+const DESIGN_VERSION = "2026-07-06-feedback-random-mpl-row";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -294,6 +296,7 @@ function restoreState(expectedParticipant = "") {
     "blockIntro",
     "practice",
     "practiceSummary",
+    "timePressureIntro",
     "memoryDisplay",
     "memoryPreRecall",
     "task",
@@ -315,7 +318,7 @@ function restoreState(expectedParticipant = "") {
     runtime: null,
     records,
     blockStartedAt: Date.now(),
-    taskStartedAt: Date.now(),
+    taskStartedAt: savedPhase === "timePressureIntro" ? null : Date.now(),
     taskModes: Array.isArray(saved.taskModes) ? saved.taskModes : [],
     taskTimedOut: Boolean(saved.taskTimedOut),
     memoryChallenge: normalizeMemoryChallenge(saved.memoryChallenge, boundedTaskIndex, savedPhase),
@@ -341,6 +344,7 @@ function render() {
   if (state.phase === "blockIntro") return renderBlockIntro();
   if (state.phase === "practice") return renderPractice();
   if (state.phase === "practiceSummary") return renderPracticeSummary();
+  if (state.phase === "timePressureIntro") return renderTimePressureIntro();
   if (state.phase === "memoryDisplay") return renderMemoryDisplay();
   if (state.phase === "memoryPreRecall") return renderMemoryRecall("pre");
   if (state.phase === "task") return renderTask();
@@ -362,7 +366,8 @@ function initializeKeyboardShortcuts() {
   window.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.repeat) return;
     if (event.key !== "Enter" && event.key !== "Return") return;
-    const button = document.getElementById("continueBisection");
+    const button = document.getElementById("continueBisection")
+      || document.getElementById("startTimePressureTask");
     if (!button || button.disabled) return;
     const active = document.activeElement;
     const canSubmitFromKeyboard =
@@ -569,10 +574,12 @@ function createTaskModes(tasks) {
   const taskCount = tasks.length;
   const modes = Array.from({ length: taskCount }, () => MODE_NORMAL);
   const randomizedIndexes = shuffle(Array.from({ length: Math.max(0, taskCount - 1) }, (_, index) => index + 1));
-  randomizedIndexes.slice(0, 3).forEach((index) => {
+  const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, randomizedIndexes.length);
+  const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, randomizedIndexes.length - timePressureCount);
+  randomizedIndexes.slice(0, timePressureCount).forEach((index) => {
     modes[index] = MODE_TIME_PRESSURE;
   });
-  randomizedIndexes.slice(3, 6).forEach((index) => {
+  randomizedIndexes.slice(timePressureCount, timePressureCount + numberMemoryCount).forEach((index) => {
     modes[index] = MODE_NUMBER_MEMORY;
   });
   return modes;
@@ -592,7 +599,7 @@ function taskModeAt(index) {
 }
 
 function currentTaskMode() {
-  if (!["memoryDisplay", "memoryPreRecall", "task", "memoryPostRecall"].includes(state.phase)) return MODE_NORMAL;
+  if (!["timePressureIntro", "memoryDisplay", "memoryPreRecall", "task", "memoryPostRecall"].includes(state.phase)) return MODE_NORMAL;
   return taskModeAt(state.taskIndex);
 }
 
@@ -602,44 +609,54 @@ function isTimePressureTask() {
 
 function clearTaskTimer() {
   if (!taskTimerId) return;
+  cancelAnimationFrame(taskTimerId);
   clearInterval(taskTimerId);
   taskTimerId = null;
 }
 
 function clearMemoryTimer() {
   if (!memoryTimerId) return;
+  cancelAnimationFrame(memoryTimerId);
   clearTimeout(memoryTimerId);
   clearInterval(memoryTimerId);
   memoryTimerId = null;
 }
 
+function remainingTaskMs() {
+  if (!state.taskStartedAt) return TIME_PRESSURE_SECONDS * 1000;
+  const elapsedMs = Math.max(0, Date.now() - state.taskStartedAt);
+  return Math.max(0, TIME_PRESSURE_SECONDS * 1000 - elapsedMs);
+}
+
 function remainingTaskSeconds() {
-  if (!state.taskStartedAt) return TIME_PRESSURE_SECONDS;
-  const elapsedSeconds = Math.floor((Date.now() - state.taskStartedAt) / 1000);
-  return Math.max(0, TIME_PRESSURE_SECONDS - elapsedSeconds);
+  return Math.ceil(remainingTaskMs() / 1000);
+}
+
+function exceededTaskMs() {
+  if (!state.taskStartedAt) return 0;
+  const elapsedMs = Math.max(0, Date.now() - state.taskStartedAt);
+  return Math.max(0, elapsedMs - TIME_PRESSURE_SECONDS * 1000);
 }
 
 function exceededTaskSeconds() {
-  if (!state.taskStartedAt) return 0;
-  const elapsedSeconds = Math.floor((Date.now() - state.taskStartedAt) / 1000);
-  return Math.max(0, elapsedSeconds - TIME_PRESSURE_SECONDS);
+  return Math.ceil(exceededTaskMs() / 1000);
 }
 
 function startTaskTimerIfNeeded() {
   if (!isTimePressureTask()) return;
   const tick = () => {
-    const remaining = remainingTaskSeconds();
-    const exceeded = exceededTaskSeconds();
+    const remainingMs = remainingTaskMs();
+    const exceededMs = exceededTaskMs();
     const timer = document.getElementById("timerRemaining");
     const panel = document.getElementById("timerPanel");
     const progress = document.getElementById("timerProgressFill");
-    if (timer) timer.textContent = timerText(remaining, exceeded);
-    if (panel) panel.classList.toggle("expired", exceeded > 0 || state.taskTimedOut);
-    if (progress) progress.style.width = `${timerProgressPercent(remaining, exceeded)}%`;
-    if (remaining <= 0) handleTimeExpired();
+    if (timer) timer.textContent = timerText(remainingMs, exceededMs);
+    if (panel) panel.classList.toggle("expired", exceededMs > 0 || state.taskTimedOut);
+    if (progress) progress.style.width = `${timerProgressPercent(remainingMs, exceededMs)}%`;
+    if (remainingMs <= 0) handleTimeExpired();
+    if (isTimePressureTask()) taskTimerId = requestAnimationFrame(tick);
   };
   tick();
-  taskTimerId = setInterval(tick, 250);
 }
 
 function handleTimeExpired() {
@@ -647,14 +664,14 @@ function handleTimeExpired() {
   state.taskTimedOut = true;
 }
 
-function timerText(remaining, exceeded) {
-  if (exceeded > 0) return `制限時間を ${exceeded} 秒超過しています`;
-  return `${remaining}s / ${TIME_PRESSURE_SECONDS}s`;
+function timerText(remainingMs, exceededMs) {
+  if (exceededMs > 0) return `制限時間を ${Math.ceil(exceededMs / 1000)} 秒超過しています`;
+  return `${Math.ceil(remainingMs / 1000)}s / ${TIME_PRESSURE_SECONDS}s`;
 }
 
-function timerProgressPercent(remaining, exceeded) {
-  if (exceeded > 0) return 100;
-  return Math.max(0, Math.min(100, Math.round((remaining / TIME_PRESSURE_SECONDS) * 100)));
+function timerProgressPercent(remainingMs, exceededMs) {
+  if (exceededMs > 0) return 100;
+  return Math.max(0, Math.min(100, (remainingMs / (TIME_PRESSURE_SECONDS * 1000)) * 100));
 }
 
 function currentPracticeTask() {
@@ -692,10 +709,42 @@ function startCurrentTaskFlow() {
     state.phase = "memoryDisplay";
     state.memoryChallenge = createMemoryChallenge(state.taskIndex);
     state.taskStartedAt = null;
+  } else if (taskModeAt(state.taskIndex) === MODE_TIME_PRESSURE) {
+    state.phase = "timePressureIntro";
+    state.taskStartedAt = null;
   } else {
     state.phase = "task";
     state.taskStartedAt = Date.now();
   }
+  saveState();
+  render();
+  scrollToTopAfterRender();
+}
+
+function renderTimePressureIntro() {
+  app.innerHTML = `
+    <main class="screen narrow-screen">
+      <section class="center-card time-pressure-intro-card">
+        <div class="step-label">時間制限</div>
+        <h2>次の課題には時間制限があります</h2>
+        <p>確認ボタンを押すと、すぐに時間制限つきの課題が始まります。</p>
+        <p class="muted">制限時間は ${TIME_PRESSURE_SECONDS} 秒です。</p>
+        <div class="btn-row">
+          <button class="btn-primary" id="startTimePressureTask" type="button" autofocus>確認して始める</button>
+        </div>
+      </section>
+    </main>
+  `;
+  document.getElementById("startTimePressureTask").addEventListener("click", startTimePressureTask);
+}
+
+function startTimePressureTask() {
+  state.phase = "task";
+  state.runtime = null;
+  state.taskTimedOut = false;
+  state.memoryChallenge = null;
+  state.taskStartedAt = Date.now();
+  state.error = "";
   saveState();
   render();
   scrollToTopAfterRender();
@@ -800,10 +849,13 @@ function renderMemoryDisplay() {
     const progress = document.getElementById("memoryProgressFill");
     if (countdown) countdown.textContent = memoryCountdownText(currentRemainingMs);
     if (progress) progress.style.width = `${memoryProgressPercent(currentRemainingMs)}%`;
-    if (currentRemainingMs <= 0) finishDisplay();
+    if (currentRemainingMs <= 0) {
+      finishDisplay();
+      return;
+    }
+    memoryTimerId = requestAnimationFrame(tick);
   };
   tick();
-  memoryTimerId = setInterval(tick, 100);
 }
 
 function memoryDisplayRemainingMs(challenge) {
@@ -817,7 +869,7 @@ function memoryCountdownText(remainingMs) {
 }
 
 function memoryProgressPercent(remainingMs) {
-  return Math.max(0, Math.min(100, Math.round((remainingMs / (NUMBER_MEMORY_SECONDS * 1000)) * 100)));
+  return Math.max(0, Math.min(100, (remainingMs / (NUMBER_MEMORY_SECONDS * 1000)) * 100));
 }
 
 function renderMemoryRecall(stage) {
@@ -1009,7 +1061,10 @@ function renderFeedback() {
         <h3 class="question-title">この課題の結果</h3>
         <details class="feedback-details">
           <summary class="feedback-summary">
-            <span class="feedback-summary-label">獲得金額</span>
+            <span class="feedback-summary-label">
+              <span>獲得金額</span>
+              ${feedback.summary_note ? `<small>${escapeHtml(feedback.summary_note)}</small>` : ""}
+            </span>
             <strong class="feedback-total ${feedback.penalty_applied ? "zero" : ""}">${escapeHtml(formatYen(feedback.total_amount))}</strong>
             <span class="feedback-toggle">詳細</span>
           </summary>
@@ -1042,7 +1097,7 @@ function renderFeedbackItems(items = []) {
     return `<p class="muted">この課題の抽選明細はありません。</p>`;
   }
   return items.map((item) => `
-    <div class="feedback-item">
+    <div class="feedback-item ${item.selected_for_payment ? "selected-for-payment" : ""}">
       <div class="feedback-item-main">
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.selected_label)}: ${escapeHtml(item.selected_option)}</span>
@@ -1050,6 +1105,7 @@ function renderFeedbackItems(items = []) {
       <div class="feedback-item-result">
         <span>${escapeHtml(item.outcome_label)}</span>
         <strong>${escapeHtml(formatYen(item.reward_amount))}</strong>
+        ${item.selected_for_payment ? `<span class="feedback-selected-badge">抽選された行</span>` : ""}
       </div>
     </div>
   `).join("");
@@ -1818,16 +1874,57 @@ function recordTask(block, task, payload) {
 
 function buildTaskFeedback(task, payload) {
   const items = buildFeedbackItems(task, payload);
-  const totalAmount = roundYen(items.reduce((sum, item) => sum + Number(item.reward_amount ?? 0), 0));
+  const payment = selectFeedbackPayment(task, items);
   return {
     currency: "JPY",
-    raw_total_amount: totalAmount,
-    total_amount: totalAmount,
+    raw_total_amount: payment.amount,
+    total_amount: payment.amount,
+    raw_all_items_total_amount: payment.allItemsAmount,
     item_count: items.length,
-    items,
+    payment_rule: payment.rule,
+    selected_item_index: payment.selectedItemIndex,
+    selected_item_label: payment.selectedItemLabel,
+    selected_item_amount: payment.selectedItemAmount,
+    summary_note: payment.summaryNote,
+    items: payment.items,
     penalty_applied: false,
     penalty_reasons: [],
     settled_at: new Date().toISOString(),
+  };
+}
+
+function selectFeedbackPayment(task, items) {
+  const allItemsAmount = roundYen(items.reduce((sum, item) => sum + Number(item.reward_amount ?? 0), 0));
+  if (task.type === "mpl" && items.length) {
+    const selectedIndex = Math.floor(Math.random() * items.length);
+    const selectedItem = items[selectedIndex];
+    const selectedAmount = roundYen(selectedItem.reward_amount ?? 0);
+    return {
+      amount: selectedAmount,
+      allItemsAmount,
+      rule: "random_mpl_row",
+      selectedItemIndex: selectedItem.item_index ?? selectedIndex + 1,
+      selectedItemLabel: selectedItem.label,
+      selectedItemAmount: selectedAmount,
+      summaryNote: `抽選された行: ${selectedItem.label}`,
+      items: items.map((item, index) => ({
+        ...item,
+        selected_for_payment: index === selectedIndex,
+      })),
+    };
+  }
+  return {
+    amount: allItemsAmount,
+    allItemsAmount,
+    rule: "sum_all_items",
+    selectedItemIndex: "",
+    selectedItemLabel: "",
+    selectedItemAmount: "",
+    summaryNote: "",
+    items: items.map((item) => ({
+      ...item,
+      selected_for_payment: false,
+    })),
   };
 }
 
@@ -1875,6 +1972,7 @@ function buildMplFeedbackItems(task, payload) {
       : settleCertain(row.amount);
     return buildFeedbackItem({
       label: `行 ${row.row}`,
+      itemIndex: row.row,
       selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
       selectedOption,
       settlement,
@@ -1898,6 +1996,7 @@ function buildBisectionFeedbackItems(task, payload) {
       : `${task.optionBPrefix} ${formatYen(candidate)}、${task.optionBSuffix}`;
     return buildFeedbackItem({
       label: `比較 ${entry.round}`,
+      itemIndex: entry.round,
       selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
       selectedOption,
       settlement: settleLottery(outcomes),
@@ -1924,6 +2023,7 @@ function buildProbabilityBisectionFeedbackItems(_task, payload) {
       : `${formatProbability(candidate)} の確率で ${formatYen(highAmount)}、それ以外は ${formatYen(baselineAmount)}`;
     return buildFeedbackItem({
       label: `確率比較 ${entry.round}`,
+      itemIndex: entry.round,
       selectedLabel: choice === "A" ? "選択肢A" : "選択肢B",
       selectedOption,
       settlement,
@@ -1941,6 +2041,7 @@ function buildProbabilityMatchFeedbackItems(task, payload) {
   ]);
   return [buildFeedbackItem({
     label: "確率入力",
+    itemIndex: 1,
     selectedLabel: "入力された確率",
     selectedOption: `${formatProbability(probability)} の確率で ${formatYen(highAmount)}、それ以外は ${formatYen(baselineAmount)}`,
     settlement,
@@ -1951,21 +2052,24 @@ function buildDeterministicFeedbackItems(_task, payload) {
   const amount = payload.ce_estimate ?? payload.estimate ?? payload.value ?? 0;
   return [buildFeedbackItem({
     label: "回答",
+    itemIndex: 1,
     selectedLabel: "入力値",
     selectedOption: formatYen(amount),
     settlement: settleCertain(amount),
   })];
 }
 
-function buildFeedbackItem({ label, selectedLabel, selectedOption, settlement }) {
+function buildFeedbackItem({ label, itemIndex = "", selectedLabel, selectedOption, settlement }) {
   return {
     label,
+    item_index: itemIndex,
     selected_label: selectedLabel,
     selected_option: selectedOption,
     outcome_probability: settlement.probability,
     random_value: settlement.randomValue,
     outcome_label: settlement.outcomeLabel,
     reward_amount: settlement.rewardAmount,
+    selected_for_payment: false,
   };
 }
 
@@ -2351,9 +2455,14 @@ function downloadCsv(filename, data) {
     "switch_status",
     "monotonic",
     "response_time_ms",
+    "reward_payment_rule",
     "reward_total_amount",
     "reward_raw_total_amount",
+    "reward_raw_all_items_total_amount",
     "reward_item_count",
+    "reward_selected_item_index",
+    "reward_selected_item_label",
+    "reward_selected_item_amount",
     "reward_penalty_reasons",
     "reward_settled_at",
     "timestamp",
@@ -2397,9 +2506,14 @@ function downloadCsv(filename, data) {
     switch_status: record.payload.switch_status ?? "",
     monotonic: record.payload.monotonic ?? "",
     response_time_ms: record.response_time_ms,
+    reward_payment_rule: record.payload.feedback?.payment_rule ?? "",
     reward_total_amount: record.payload.feedback?.total_amount ?? "",
     reward_raw_total_amount: record.payload.feedback?.raw_total_amount ?? "",
+    reward_raw_all_items_total_amount: record.payload.feedback?.raw_all_items_total_amount ?? "",
     reward_item_count: record.payload.feedback?.item_count ?? "",
+    reward_selected_item_index: record.payload.feedback?.selected_item_index ?? "",
+    reward_selected_item_label: record.payload.feedback?.selected_item_label ?? "",
+    reward_selected_item_amount: record.payload.feedback?.selected_item_amount ?? "",
     reward_penalty_reasons: (record.payload.feedback?.penalty_reasons ?? []).join("; "),
     reward_settled_at: record.payload.feedback?.settled_at ?? "",
     timestamp: record.timestamp,
@@ -2457,10 +2571,15 @@ function runSmokeTest() {
     const block = currentBlock();
     state.taskModes = createTaskModes(block.tasks);
     const modeCounts = countModes(state.taskModes);
+    const expectedModeCounts = expectedTaskModeCounts(block.tasks.length);
     if (block.tasks.length !== 12) {
       failures.push(`${block.title} task count ${block.tasks.length}, expected 12`);
     }
-    if (modeCounts[MODE_NORMAL] !== 6 || modeCounts[MODE_TIME_PRESSURE] !== 3 || modeCounts[MODE_NUMBER_MEMORY] !== 3) {
+    if (
+      modeCounts[MODE_NORMAL] !== expectedModeCounts[MODE_NORMAL]
+      || modeCounts[MODE_TIME_PRESSURE] !== expectedModeCounts[MODE_TIME_PRESSURE]
+      || modeCounts[MODE_NUMBER_MEMORY] !== expectedModeCounts[MODE_NUMBER_MEMORY]
+    ) {
       failures.push(`${block.title} mode counts normal=${modeCounts[MODE_NORMAL] ?? 0}, time_pressure=${modeCounts[MODE_TIME_PRESSURE] ?? 0}, number_memory=${modeCounts[MODE_NUMBER_MEMORY] ?? 0}`);
     }
     if (state.taskModes[0] !== MODE_NORMAL) {
@@ -2497,6 +2616,18 @@ function runSmokeTest() {
   if (state.records.some((record) => Number(record.payload?.feedback?.item_count ?? 0) < 1)) {
     failures.push("some records are missing feedback settlement items");
   }
+  state.records.filter((record) => record.task_type === "mpl").forEach((record) => {
+    const feedback = record.payload?.feedback;
+    const selectedItems = (feedback?.items ?? []).filter((item) => item.selected_for_payment);
+    if (feedback?.payment_rule !== "random_mpl_row") {
+      failures.push(`${record.task_id} MPL feedback payment rule ${feedback?.payment_rule}, expected random_mpl_row`);
+    }
+    if (selectedItems.length !== 1) {
+      failures.push(`${record.task_id} selected MPL payment rows ${selectedItems.length}, expected 1`);
+    } else if (roundYen(feedback.raw_total_amount) !== roundYen(selectedItems[0].reward_amount)) {
+      failures.push(`${record.task_id} raw reward ${feedback.raw_total_amount}, expected selected row reward ${selectedItems[0].reward_amount}`);
+    }
+  });
   if (!state.records.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.payload?.feedback?.penalty_applied && record.payload.feedback.total_amount === 0)) {
     failures.push("time pressure zero-reward penalty was not covered");
   }
@@ -2506,7 +2637,12 @@ function runSmokeTest() {
   BASE_BLOCKS.forEach((block) => {
     const blockRecords = state.records.filter((record) => record.block_id === block.id);
     const modeCounts = countModes(blockRecords.map((record) => record.task_mode));
-    if (modeCounts[MODE_NORMAL] !== 6 || modeCounts[MODE_TIME_PRESSURE] !== 3 || modeCounts[MODE_NUMBER_MEMORY] !== 3) {
+    const expectedModeCounts = expectedTaskModeCounts(block.tasks.length);
+    if (
+      modeCounts[MODE_NORMAL] !== expectedModeCounts[MODE_NORMAL]
+      || modeCounts[MODE_TIME_PRESSURE] !== expectedModeCounts[MODE_TIME_PRESSURE]
+      || modeCounts[MODE_NUMBER_MEMORY] !== expectedModeCounts[MODE_NUMBER_MEMORY]
+    ) {
       failures.push(`${block.title} exported mode counts normal=${modeCounts[MODE_NORMAL] ?? 0}, time_pressure=${modeCounts[MODE_TIME_PRESSURE] ?? 0}, number_memory=${modeCounts[MODE_NUMBER_MEMORY] ?? 0}`);
     }
     if (blockRecords[0]?.task_mode !== MODE_NORMAL) {
@@ -2516,7 +2652,7 @@ function runSmokeTest() {
       failures.push(`${block.title} time pressure limit is not ${TIME_PRESSURE_SECONDS}`);
     }
     const memoryRecords = blockRecords.filter((record) => record.task_mode === MODE_NUMBER_MEMORY);
-    if (memoryRecords.length !== 3) failures.push(`${block.title} memory record count ${memoryRecords.length}, expected 3`);
+    if (memoryRecords.length !== expectedModeCounts[MODE_NUMBER_MEMORY]) failures.push(`${block.title} memory record count ${memoryRecords.length}, expected ${expectedModeCounts[MODE_NUMBER_MEMORY]}`);
     if (memoryRecords.some((record) => !record.has_memory_task || !/^\d{5}$/.test(String(record.memory_number)))) {
       failures.push(`${block.title} memory record missing 5-digit number`);
     }
@@ -2536,6 +2672,17 @@ function countModes(modes) {
     counts[mode] = (counts[mode] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function expectedTaskModeCounts(taskCount) {
+  const pressureAssignable = Math.max(0, taskCount - 1);
+  const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, pressureAssignable);
+  const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, pressureAssignable - timePressureCount);
+  return {
+    [MODE_NORMAL]: taskCount - timePressureCount - numberMemoryCount,
+    [MODE_TIME_PRESSURE]: timePressureCount,
+    [MODE_NUMBER_MEMORY]: numberMemoryCount,
+  };
 }
 
 function smokeMemoryChallengeIfNeeded(taskIndex, forceWrong = false) {

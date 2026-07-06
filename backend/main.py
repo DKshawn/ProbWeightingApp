@@ -367,9 +367,11 @@ PWF_CSV_COLUMNS = [
     "memory_pre_response_time_ms", "memory_post_response_time_ms",
     "response_type", "estimate", "switch_lower",
     "switch_upper", "switch_row", "switch_direction", "switch_status",
-    "monotonic", "response_time_ms", "reward_total_amount",
-    "reward_raw_total_amount", "reward_item_count", "reward_penalty_reasons",
-    "reward_settled_at", "prompt", "source_timestamp",
+    "monotonic", "response_time_ms", "reward_payment_rule", "reward_total_amount",
+    "reward_raw_total_amount", "reward_raw_all_items_total_amount",
+    "reward_item_count", "reward_selected_item_index", "reward_selected_item_label",
+    "reward_selected_item_amount", "reward_penalty_reasons", "reward_settled_at",
+    "prompt", "source_timestamp",
     "payload_json", "Timestamp",
 ]
 
@@ -417,9 +419,14 @@ PWF_FIELD_MAP = {
     "switch_status": "switch_status",
     "monotonic": "monotonic",
     "response_time_ms": "response_time_ms",
+    "reward_payment_rule": "reward_payment_rule",
     "reward_total_amount": "reward_total_amount",
     "reward_raw_total_amount": "reward_raw_total_amount",
+    "reward_raw_all_items_total_amount": "reward_raw_all_items_total_amount",
     "reward_item_count": "reward_item_count",
+    "reward_selected_item_index": "reward_selected_item_index",
+    "reward_selected_item_label": "reward_selected_item_label",
+    "reward_selected_item_amount": "reward_selected_item_amount",
     "reward_penalty_reasons": "reward_penalty_reasons",
     "reward_settled_at": "reward_settled_at",
     "prompt": "prompt",
@@ -505,9 +512,14 @@ def download_pwf_csv(student_id: str):
         row = {col: r.get(PWF_FIELD_MAP[col], "") for col in PWF_CSV_COLUMNS}
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
+        row["reward_payment_rule"] = row["reward_payment_rule"] or feedback.get("payment_rule", "")
         row["reward_total_amount"] = row["reward_total_amount"] or feedback.get("total_amount", "")
         row["reward_raw_total_amount"] = row["reward_raw_total_amount"] or feedback.get("raw_total_amount", "")
+        row["reward_raw_all_items_total_amount"] = row["reward_raw_all_items_total_amount"] or feedback.get("raw_all_items_total_amount", "")
         row["reward_item_count"] = row["reward_item_count"] or feedback.get("item_count", "")
+        row["reward_selected_item_index"] = row["reward_selected_item_index"] or feedback.get("selected_item_index", "")
+        row["reward_selected_item_label"] = row["reward_selected_item_label"] or feedback.get("selected_item_label", "")
+        row["reward_selected_item_amount"] = row["reward_selected_item_amount"] or feedback.get("selected_item_amount", "")
         row["reward_penalty_reasons"] = row["reward_penalty_reasons"] or "; ".join(feedback.get("penalty_reasons", []) or [])
         row["reward_settled_at"] = row["reward_settled_at"] or feedback.get("settled_at", "")
         row["payload_json"] = json.dumps(row["payload_json"], ensure_ascii=False, separators=(",", ":"))
