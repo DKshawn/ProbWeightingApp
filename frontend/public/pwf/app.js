@@ -10,7 +10,7 @@ const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-06-random-feedback-decision";
+const DESIGN_VERSION = "2026-07-06-anonymous-experiment-labels";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -23,7 +23,7 @@ function createBlocks(amountMultiplier = 1) {
   return [
   {
     id: "choi-2022-study2",
-    title: "Choi et al. (2022) Study 2",
+    title: "実験C",
     label: "12リスト",
     method: "power utility alpha estimated in ML2",
     intro:
@@ -47,7 +47,7 @@ function createBlocks(amountMultiplier = 1) {
   },
   {
     id: "abdellaoui-2000",
-    title: "Abdellaoui (2000)",
+    title: "実験A",
     label: "8問 + PWF 4問",
     method: "utility bisection + gain-domain probability bisection",
     intro:
@@ -71,7 +71,7 @@ function createBlocks(amountMultiplier = 1) {
   },
   {
     id: "bruhin-2010",
-    title: "Bruhin et al. (2010)",
+    title: "実験B",
     label: "12表",
     method: "finite mixture structural estimation",
     intro:
