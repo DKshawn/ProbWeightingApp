@@ -437,6 +437,16 @@ button, input {
   font-weight: 900;
 }
 
+.table-head > div {
+  gap: 6px;
+}
+
+.table-head-subtitle {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 .table-row > div,
 .table-option-cell {
   padding: 7px 10px;
@@ -461,6 +471,20 @@ button, input {
   font-family: inherit;
   font-weight: 700;
   justify-content: flex-start;
+  gap: 6px;
+}
+
+.table-option-cell > span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mobile-cell-label {
+  display: none;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 900;
+  white-space: nowrap;
 }
 
 .table-option-cell:hover {
@@ -920,6 +944,16 @@ button, input {
 
   .table-option-cell.choice-b {
     grid-area: option-b;
+  }
+
+  .table-option-cell {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+
+  .mobile-cell-label {
+    display: inline;
   }
 }
 

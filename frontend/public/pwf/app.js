@@ -10,7 +10,7 @@ const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-06-block-time-pressure-limits";
+const DESIGN_VERSION = "2026-07-06-compact-mpl-display";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -1352,18 +1352,32 @@ function renderChoiceTable(rows, choices, options = {}) {
     <div class="table ${compactClass}">
       <div class="table-row table-head">
         <div>行</div>
-        <div>選択肢A</div>
-        <div>選択肢B</div>
+        <div><span>選択肢A</span><span class="table-head-subtitle">くじ</span></div>
+        <div><span>選択肢B</span><span class="table-head-subtitle">確実金額</span></div>
       </div>
       ${rows.map((row) => `
         <div class="table-row">
           <div>${row.row}</div>
-          <button class="table-option-cell choice-a ${choices[row.row] === "A" ? "selected" : ""}" data-row="${row.row}" data-choice="A" type="button">${escapeHtml(row.optionA)}</button>
-          <button class="table-option-cell choice-b ${choices[row.row] === "B" ? "selected" : ""}" data-row="${row.row}" data-choice="B" type="button">${escapeHtml(row.optionB)}</button>
+          <button class="table-option-cell choice-a ${choices[row.row] === "A" ? "selected" : ""}" data-row="${row.row}" data-choice="A" type="button">
+            <span class="mobile-cell-label">選択肢A くじ</span>
+            <span>${renderTextWithFractions(simplifyLotteryDisplay(row.optionA))}</span>
+          </button>
+          <button class="table-option-cell choice-b ${choices[row.row] === "B" ? "selected" : ""}" data-row="${row.row}" data-choice="B" type="button">
+            <span class="mobile-cell-label">選択肢B 確実金額</span>
+            <span>${escapeHtml(simplifyCertainDisplay(row.optionB))}</span>
+          </button>
         </div>
       `).join("")}
     </div>
   `;
+}
+
+function simplifyLotteryDisplay(value) {
+  return String(value ?? "").replace(/%の確率で/g, "%で");
+}
+
+function simplifyCertainDisplay(value) {
+  return String(value ?? "").replace(/\s*を確実に受け取る\s*$/, "");
 }
 
 function shouldUseCompactTable(rows) {
