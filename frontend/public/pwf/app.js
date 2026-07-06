@@ -1,7 +1,8 @@
 const SWITCH_B_TO_A = "B_TO_A";
 const SWITCH_A_TO_B = "A_TO_B";
 const ASSIGNMENT_MODULUS = 3;
-const TIME_PRESSURE_SECONDS = 20;
+const DEFAULT_TIME_PRESSURE_SECONDS = 12;
+const ABDELLAOUI_TIME_PRESSURE_SECONDS = 18;
 const TIME_PRESSURE_TASKS_PER_BLOCK = 5;
 const NUMBER_MEMORY_SECONDS = 5;
 const NUMBER_MEMORY_DIGITS = 5;
@@ -9,7 +10,7 @@ const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-06-feedback-random-mpl-row";
+const DESIGN_VERSION = "2026-07-06-block-time-pressure-limits";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -607,6 +608,12 @@ function isTimePressureTask() {
   return state.phase === "task" && currentTaskMode() === MODE_TIME_PRESSURE;
 }
 
+function timePressureSecondsForBlock(block = currentBlock()) {
+  return block?.id === "abdellaoui-2000"
+    ? ABDELLAOUI_TIME_PRESSURE_SECONDS
+    : DEFAULT_TIME_PRESSURE_SECONDS;
+}
+
 function clearTaskTimer() {
   if (!taskTimerId) return;
   cancelAnimationFrame(taskTimerId);
@@ -623,9 +630,10 @@ function clearMemoryTimer() {
 }
 
 function remainingTaskMs() {
-  if (!state.taskStartedAt) return TIME_PRESSURE_SECONDS * 1000;
+  const limitMs = timePressureSecondsForBlock() * 1000;
+  if (!state.taskStartedAt) return limitMs;
   const elapsedMs = Math.max(0, Date.now() - state.taskStartedAt);
-  return Math.max(0, TIME_PRESSURE_SECONDS * 1000 - elapsedMs);
+  return Math.max(0, limitMs - elapsedMs);
 }
 
 function remainingTaskSeconds() {
@@ -634,8 +642,9 @@ function remainingTaskSeconds() {
 
 function exceededTaskMs() {
   if (!state.taskStartedAt) return 0;
+  const limitMs = timePressureSecondsForBlock() * 1000;
   const elapsedMs = Math.max(0, Date.now() - state.taskStartedAt);
-  return Math.max(0, elapsedMs - TIME_PRESSURE_SECONDS * 1000);
+  return Math.max(0, elapsedMs - limitMs);
 }
 
 function exceededTaskSeconds() {
@@ -666,12 +675,12 @@ function handleTimeExpired() {
 
 function timerText(remainingMs, exceededMs) {
   if (exceededMs > 0) return `制限時間を ${Math.ceil(exceededMs / 1000)} 秒超過しています`;
-  return `${Math.ceil(remainingMs / 1000)}s / ${TIME_PRESSURE_SECONDS}s`;
+  return `${Math.ceil(remainingMs / 1000)}s / ${timePressureSecondsForBlock()}s`;
 }
 
 function timerProgressPercent(remainingMs, exceededMs) {
   if (exceededMs > 0) return 100;
-  return Math.max(0, Math.min(100, (remainingMs / (TIME_PRESSURE_SECONDS * 1000)) * 100));
+  return Math.max(0, Math.min(100, (remainingMs / (timePressureSecondsForBlock() * 1000)) * 100));
 }
 
 function currentPracticeTask() {
@@ -722,13 +731,14 @@ function startCurrentTaskFlow() {
 }
 
 function renderTimePressureIntro() {
+  const limitSeconds = timePressureSecondsForBlock();
   app.innerHTML = `
     <main class="screen narrow-screen">
       <section class="center-card time-pressure-intro-card">
         <div class="step-label">時間制限</div>
         <h2>次の課題には時間制限があります</h2>
         <p>確認ボタンを押すと、すぐに時間制限つきの課題が始まります。</p>
-        <p class="muted">制限時間は ${TIME_PRESSURE_SECONDS} 秒です。</p>
+        <p class="muted">制限時間は ${limitSeconds} 秒です。</p>
         <div class="btn-row">
           <button class="btn-primary" id="startTimePressureTask" type="button" autofocus>確認して始める</button>
         </div>
@@ -1136,17 +1146,17 @@ function renderModePanel() {
 }
 
 function renderTimer() {
-  const remaining = remainingTaskSeconds();
-  const exceeded = exceededTaskSeconds();
-  const expired = state.taskTimedOut || exceeded > 0;
+  const remainingMs = remainingTaskMs();
+  const exceededMs = exceededTaskMs();
+  const expired = state.taskTimedOut || exceededMs > 0;
   return `
     <section class="timer-panel ${expired ? "expired" : ""}" id="timerPanel">
       <div class="timer-panel-row">
         <span>時間制限モード</span>
-        <span class="timer-countdown" id="timerRemaining">${timerText(remaining, exceeded)}</span>
+        <span class="timer-countdown" id="timerRemaining">${timerText(remainingMs, exceededMs)}</span>
       </div>
       <div class="timer-progress-track" aria-hidden="true">
-        <div class="timer-progress-fill" id="timerProgressFill" style="width:${timerProgressPercent(remaining, exceeded)}%"></div>
+        <div class="timer-progress-fill" id="timerProgressFill" style="width:${timerProgressPercent(remainingMs, exceededMs)}%"></div>
       </div>
     </section>
   `;
@@ -1827,6 +1837,7 @@ function amountLabel(value, fallback) {
 
 function recordTask(block, task, payload) {
   const taskMode = currentTaskMode();
+  const timePressureSeconds = timePressureSecondsForBlock(block);
   const timeOverSeconds = taskMode === MODE_TIME_PRESSURE ? exceededTaskSeconds() : "";
   const memoryFields = memoryRecordFields();
   const feedback = buildTaskFeedback(task, payload);
@@ -1847,7 +1858,7 @@ function recordTask(block, task, payload) {
     task_index: state.taskIndex + 1,
     task_type: task.type,
     task_mode: taskMode,
-    time_limit_seconds: taskMode === MODE_TIME_PRESSURE ? TIME_PRESSURE_SECONDS : "",
+    time_limit_seconds: taskMode === MODE_TIME_PRESSURE ? timePressureSeconds : "",
     timed_out: taskMode === MODE_TIME_PRESSURE && (state.taskTimedOut || timeOverSeconds > 0),
     time_over_seconds: timeOverSeconds,
     ...memoryFields,
@@ -2590,7 +2601,8 @@ function runSmokeTest() {
       const mode = currentTaskMode();
       const shouldForceTimePenalty = !forcedTimePenalty && mode === MODE_TIME_PRESSURE;
       const shouldForceMemoryPenalty = !forcedMemoryPenalty && mode === MODE_NUMBER_MEMORY;
-      state.taskStartedAt = shouldForceTimePenalty ? Date.now() - (TIME_PRESSURE_SECONDS + 2) * 1000 : Date.now();
+      const timePressureSeconds = timePressureSecondsForBlock(block);
+      state.taskStartedAt = shouldForceTimePenalty ? Date.now() - (timePressureSeconds + 2) * 1000 : Date.now();
       state.taskTimedOut = shouldForceTimePenalty;
       state.memoryChallenge = smokeMemoryChallengeIfNeeded(taskIndex, shouldForceMemoryPenalty);
       if (shouldForceTimePenalty) forcedTimePenalty = true;
@@ -2648,8 +2660,9 @@ function runSmokeTest() {
     if (blockRecords[0]?.task_mode !== MODE_NORMAL) {
       failures.push(`${block.title} first exported task mode ${blockRecords[0]?.task_mode}, expected normal`);
     }
-    if (blockRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.time_limit_seconds !== TIME_PRESSURE_SECONDS)) {
-      failures.push(`${block.title} time pressure limit is not ${TIME_PRESSURE_SECONDS}`);
+    const timePressureSeconds = timePressureSecondsForBlock(block);
+    if (blockRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.time_limit_seconds !== timePressureSeconds)) {
+      failures.push(`${block.title} time pressure limit is not ${timePressureSeconds}`);
     }
     const memoryRecords = blockRecords.filter((record) => record.task_mode === MODE_NUMBER_MEMORY);
     if (memoryRecords.length !== expectedModeCounts[MODE_NUMBER_MEMORY]) failures.push(`${block.title} memory record count ${memoryRecords.length}, expected ${expectedModeCounts[MODE_NUMBER_MEMORY]}`);
