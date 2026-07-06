@@ -10,7 +10,7 @@ const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-06-compact-mpl-display";
+const DESIGN_VERSION = "2026-07-06-random-feedback-decision";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -1115,7 +1115,7 @@ function renderFeedbackItems(items = []) {
       <div class="feedback-item-result">
         <span>${escapeHtml(item.outcome_label)}</span>
         <strong>${escapeHtml(formatYen(item.reward_amount))}</strong>
-        ${item.selected_for_payment ? `<span class="feedback-selected-badge">抽選された行</span>` : ""}
+        ${item.selected_for_payment ? `<span class="feedback-selected-badge">${escapeHtml(item.selected_payment_badge || "抽選された行")}</span>` : ""}
       </div>
     </div>
   `).join("");
@@ -1920,21 +1920,23 @@ function buildTaskFeedback(task, payload) {
 
 function selectFeedbackPayment(task, items) {
   const allItemsAmount = roundYen(items.reduce((sum, item) => sum + Number(item.reward_amount ?? 0), 0));
-  if (task.type === "mpl" && items.length) {
+  const randomPayment = randomFeedbackPaymentConfig(task);
+  if (randomPayment && items.length) {
     const selectedIndex = Math.floor(Math.random() * items.length);
     const selectedItem = items[selectedIndex];
     const selectedAmount = roundYen(selectedItem.reward_amount ?? 0);
     return {
       amount: selectedAmount,
       allItemsAmount,
-      rule: "random_mpl_row",
+      rule: randomPayment.rule,
       selectedItemIndex: selectedItem.item_index ?? selectedIndex + 1,
       selectedItemLabel: selectedItem.label,
       selectedItemAmount: selectedAmount,
-      summaryNote: `抽選された行: ${selectedItem.label}`,
+      summaryNote: `${randomPayment.summaryLabel}: ${selectedItem.label}`,
       items: items.map((item, index) => ({
         ...item,
         selected_for_payment: index === selectedIndex,
+        selected_payment_badge: index === selectedIndex ? randomPayment.badgeLabel : "",
       })),
     };
   }
@@ -1949,8 +1951,35 @@ function selectFeedbackPayment(task, items) {
     items: items.map((item) => ({
       ...item,
       selected_for_payment: false,
+      selected_payment_badge: "",
     })),
   };
+}
+
+function randomFeedbackPaymentConfig(taskOrType) {
+  const type = typeof taskOrType === "string" ? taskOrType : taskOrType?.type;
+  if (type === "mpl") {
+    return {
+      rule: "random_mpl_row",
+      summaryLabel: "抽選された行",
+      badgeLabel: "抽選された行",
+    };
+  }
+  if (type === "bisection") {
+    return {
+      rule: "random_bisection_decision",
+      summaryLabel: "抽選された決定",
+      badgeLabel: "抽選された決定",
+    };
+  }
+  if (type === "probabilityBisection") {
+    return {
+      rule: "random_probability_bisection_decision",
+      summaryLabel: "抽選された決定",
+      badgeLabel: "抽選された決定",
+    };
+  }
+  return null;
 }
 
 function applyFeedbackPenalties(feedback, reasons) {
@@ -2642,16 +2671,19 @@ function runSmokeTest() {
   if (state.records.some((record) => Number(record.payload?.feedback?.item_count ?? 0) < 1)) {
     failures.push("some records are missing feedback settlement items");
   }
-  state.records.filter((record) => record.task_type === "mpl").forEach((record) => {
+  state.records.filter((record) => randomFeedbackPaymentConfig(record.task_type)).forEach((record) => {
     const feedback = record.payload?.feedback;
+    const expectedPayment = randomFeedbackPaymentConfig(record.task_type);
     const selectedItems = (feedback?.items ?? []).filter((item) => item.selected_for_payment);
-    if (feedback?.payment_rule !== "random_mpl_row") {
-      failures.push(`${record.task_id} MPL feedback payment rule ${feedback?.payment_rule}, expected random_mpl_row`);
+    if (feedback?.payment_rule !== expectedPayment.rule) {
+      failures.push(`${record.task_id} feedback payment rule ${feedback?.payment_rule}, expected ${expectedPayment.rule}`);
     }
     if (selectedItems.length !== 1) {
-      failures.push(`${record.task_id} selected MPL payment rows ${selectedItems.length}, expected 1`);
+      failures.push(`${record.task_id} selected feedback items ${selectedItems.length}, expected 1`);
     } else if (roundYen(feedback.raw_total_amount) !== roundYen(selectedItems[0].reward_amount)) {
-      failures.push(`${record.task_id} raw reward ${feedback.raw_total_amount}, expected selected row reward ${selectedItems[0].reward_amount}`);
+      failures.push(`${record.task_id} raw reward ${feedback.raw_total_amount}, expected selected item reward ${selectedItems[0].reward_amount}`);
+    } else if (selectedItems[0].selected_payment_badge !== expectedPayment.badgeLabel) {
+      failures.push(`${record.task_id} selected badge ${selectedItems[0].selected_payment_badge}, expected ${expectedPayment.badgeLabel}`);
     }
   });
   if (!state.records.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.payload?.feedback?.penalty_applied && record.payload.feedback.total_amount === 0)) {
