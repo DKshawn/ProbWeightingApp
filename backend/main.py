@@ -359,7 +359,7 @@ PWF_CSV_COLUMNS = [
     "session_id", "StudentID", "Name", "study_mode", "pwf_trial",
     "participant", "assignment_group", "assignment_modulus", "student_id_last3",
     "student_id_last_digit", "amount_level", "amount_multiplier", "assigned_block_id",
-    "block_id", "block_title", "task_id", "is_anchor", "task_index",
+    "block_id", "block_title", "task_id", "task_category", "is_anchor", "task_index",
     "task_type", "task_mode", "time_limit_seconds", "timed_out",
     "time_over_seconds", "has_memory_task", "memory_digits", "memory_seconds",
     "memory_number", "memory_input_pre", "memory_pre_correct",
@@ -392,6 +392,7 @@ PWF_FIELD_MAP = {
     "block_id": "block_id",
     "block_title": "block_title",
     "task_id": "task_id",
+    "task_category": "task_category",
     "is_anchor": "is_anchor",
     "task_index": "task_index",
     "task_type": "task_type",
@@ -512,6 +513,7 @@ def download_pwf_csv(student_id: str):
         row = {col: r.get(PWF_FIELD_MAP[col], "") for col in PWF_CSV_COLUMNS}
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
         feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
+        row["task_category"] = row["task_category"] or payload.get("task_category", "")
         row["reward_payment_rule"] = row["reward_payment_rule"] or feedback.get("payment_rule", "")
         row["reward_total_amount"] = row["reward_total_amount"] or feedback.get("total_amount", "")
         row["reward_raw_total_amount"] = row["reward_raw_total_amount"] or feedback.get("raw_total_amount", "")

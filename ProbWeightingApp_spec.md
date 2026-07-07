@@ -143,6 +143,8 @@ def generate_trial(N, amount_multiplier):
         q = random.choice(PROB_GRID)
         r = random.choice(PROB_GRID)
         if (p > q and
+            r != p and
+            r != q and
             p**N >= 0.05 and
             q**N >= 0.05 and
             r**N >= 0.05):
@@ -155,6 +157,7 @@ def generate_trial(N, amount_multiplier):
 ### 全5試行の生成
 - full mode：学籍番号で割り当てられた N=2 または N=3 の5試行
 - pilot mode：N=2 の5試行
+- 各試行では、Step 2/4 用の確率 `r` が Step 1/3 用の `p` または `q` と同じにならないようにする
 - セッション開始時にバックエンドで全5試行を事前生成してセッションに保存
 
 ---

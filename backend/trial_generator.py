@@ -29,7 +29,8 @@ def assign_ci_amount_level(student_id: str) -> dict:
 
 def generate_trial(N: int, trial_num: int, block: int, amount_assignment: dict) -> dict:
     """
-    制約：p > q かつ p^N >= 0.05 かつ q^N >= 0.05 かつ r^N >= 0.05
+    制約：p > q かつ r != p かつ r != q かつ
+    p^N >= 0.05 かつ q^N >= 0.05 かつ r^N >= 0.05
     Prelec(1998)の固定点 1/e ≈ 0.37 付近を重点サンプリングするため
     上記グリッドを使用。
     """
@@ -39,6 +40,8 @@ def generate_trial(N: int, trial_num: int, block: int, amount_assignment: dict) 
         r = random.choice(PROB_GRID)
         if (
             p > q
+            and r != p
+            and r != q
             and p**N >= 0.05
             and q**N >= 0.05
             and r**N >= 0.05

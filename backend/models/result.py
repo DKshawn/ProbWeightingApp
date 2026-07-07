@@ -96,6 +96,11 @@ class CiResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_indifference_directions(self):
+        if abs(self.r - self.p) < 1e-12:
+            raise ValueError("CI trial invalid: r must differ from p")
+        if abs(self.r - self.q) < 1e-12:
+            raise ValueError("CI trial invalid: r must differ from q")
+
         if self.p > self.q and self.y < self.x:
             raise ValueError(f"Step 1 invalid: probability {self.q:.3f} is lower than {self.p:.3f}, so y cannot be lower than {self.x}")
         if self.p < self.q and self.y > self.x:

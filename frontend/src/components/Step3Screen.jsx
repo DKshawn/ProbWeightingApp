@@ -44,7 +44,6 @@ export default function Step3Screen({ trial, trialIndex, totalTrials, onNext }) 
         <p>
           <strong>（確率 {qN} で <span className="unknown">?円</span>）</strong> を答えてください
         </p>
-        <p className="hint">※ 確率は p^{N} と q^{N} の値です</p>
       </div>
 
       <form onSubmit={handleSubmit} className="input-form">
