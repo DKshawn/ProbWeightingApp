@@ -1,5 +1,7 @@
 import json
 import os
+import random
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +14,13 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
+_SCHEMA_LOCK_ID = 440866261
+_RETRYABLE_DB_ERRORS = (
+    psycopg.errors.DeadlockDetected,
+    psycopg.errors.SerializationFailure,
+    psycopg.errors.LockNotAvailable,
+    psycopg.OperationalError,
+)
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_ci_results: list[dict[str, Any]] = []
 _memory_utility_results: list[dict[str, Any]] = []
@@ -51,6 +60,72 @@ def _connect():
     return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
+def _database_schema_ready(cur) -> bool:
+    required_columns = {
+        "experiment_sessions": {
+            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "time_pressure_seconds", "trials", "status", "pwf_completed",
+            "pwf_completed_at", "completed_at", "last_seen_at", "created_at",
+        },
+        "ci_results": {
+            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "time_pressure_seconds", "trial", "block", "n", "student_id_last_digit",
+            "amount_level", "amount_multiplier", "p", "q", "r", "x", "x_prime",
+            "y", "s", "y_prime", "pn", "qn", "rn", "sn", "choice",
+            "ci_satisfied", "response_time_ms", "timed_out", "timestamp",
+        },
+        "utility_results": {
+            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "time_pressure_seconds", "utility_trial", "sequence", "row", "p",
+            "r_amount", "capital_r_amount", "x_prev", "x_candidate",
+            "increment", "choice", "x_estimate", "switch_lower", "switch_upper",
+            "switch_status", "response_time_ms", "timed_out", "timestamp",
+        },
+        "pwf_results": {
+            "session_id", "student_id", "name", "study_mode", "pwf_trial",
+            "participant", "assignment_group", "assignment_modulus",
+            "student_id_last3", "student_id_last_digit", "amount_level",
+            "amount_multiplier", "assigned_block_id", "block_id", "block_title",
+            "task_id", "is_anchor", "task_index", "task_type", "task_mode",
+            "time_limit_seconds", "timed_out", "time_over_seconds",
+            "has_memory_task", "memory_digits", "memory_seconds", "memory_number",
+            "memory_input_pre", "memory_pre_correct", "memory_input_post",
+            "memory_post_correct", "memory_display_duration_ms",
+            "memory_pre_response_time_ms", "memory_post_response_time_ms",
+            "response_type", "estimate", "switch_lower", "switch_upper",
+            "switch_row", "switch_direction", "switch_status", "monotonic",
+            "response_time_ms", "prompt", "payload", "source_timestamp", "timestamp",
+        },
+    }
+    cur.execute(
+        """
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ANY(%s)
+        """,
+        (list(required_columns),),
+    )
+    actual_columns: dict[str, set[str]] = {table: set() for table in required_columns}
+    for row in cur.fetchall():
+        actual_columns.setdefault(row["table_name"], set()).add(row["column_name"])
+    return all(
+        required.issubset(actual_columns.get(table, set()))
+        for table, required in required_columns.items()
+    )
+
+
+def _with_retry(operation, *, attempts: int = 3):
+    for attempt in range(attempts):
+        try:
+            return operation()
+        except _RETRYABLE_DB_ERRORS:
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep((0.05 * (2 ** attempt)) + random.uniform(0, 0.05))
+    return None
+
+
 def ensure_schema() -> None:
     global _schema_ready
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
@@ -60,6 +135,15 @@ def ensure_schema() -> None:
 
     with _connect() as conn:
         with conn.cursor() as cur:
+            if _database_schema_ready(cur):
+                _schema_ready = True
+                return
+
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
+            if _database_schema_ready(cur):
+                _schema_ready = True
+                return
+
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS experiment_sessions (
@@ -849,89 +933,92 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
             touch_session(record["session_id"], "in_progress")
         return
 
-    ensure_schema()
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(
-                """
-                INSERT INTO pwf_results (
-                    session_id, student_id, name, study_mode, pwf_trial,
-                    participant, assignment_group, assignment_modulus, student_id_last3,
-                    student_id_last_digit, amount_level, amount_multiplier,
-                    assigned_block_id, block_id, block_title, task_id, is_anchor,
-                    task_index, task_type, task_mode, time_limit_seconds, timed_out,
-                    time_over_seconds, has_memory_task, memory_digits, memory_seconds,
-                    memory_number, memory_input_pre, memory_pre_correct, memory_input_post,
-                    memory_post_correct, memory_display_duration_ms, memory_pre_response_time_ms,
-                    memory_post_response_time_ms, response_type, estimate, switch_lower, switch_upper,
-                    switch_row, switch_direction, switch_status, monotonic,
-                    response_time_ms, prompt, payload, source_timestamp, timestamp
+    def write_records() -> None:
+        ensure_schema()
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO pwf_results (
+                        session_id, student_id, name, study_mode, pwf_trial,
+                        participant, assignment_group, assignment_modulus, student_id_last3,
+                        student_id_last_digit, amount_level, amount_multiplier,
+                        assigned_block_id, block_id, block_title, task_id, is_anchor,
+                        task_index, task_type, task_mode, time_limit_seconds, timed_out,
+                        time_over_seconds, has_memory_task, memory_digits, memory_seconds,
+                        memory_number, memory_input_pre, memory_pre_correct, memory_input_post,
+                        memory_post_correct, memory_display_duration_ms, memory_pre_response_time_ms,
+                        memory_post_response_time_ms, response_type, estimate, switch_lower, switch_upper,
+                        switch_row, switch_direction, switch_status, monotonic,
+                        response_time_ms, prompt, payload, source_timestamp, timestamp
+                    )
+                    VALUES (
+                        %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s, %(pwf_trial)s,
+                        %(participant)s, %(assignment_group)s, %(assignment_modulus)s, %(student_id_last3)s,
+                        %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
+                        %(assigned_block_id)s, %(block_id)s, %(block_title)s, %(task_id)s, %(is_anchor)s,
+                        %(task_index)s, %(task_type)s, %(task_mode)s, %(time_limit_seconds)s, %(timed_out)s,
+                        %(time_over_seconds)s, %(has_memory_task)s, %(memory_digits)s, %(memory_seconds)s,
+                        %(memory_number)s, %(memory_input_pre)s, %(memory_pre_correct)s, %(memory_input_post)s,
+                        %(memory_post_correct)s, %(memory_display_duration_ms)s, %(memory_pre_response_time_ms)s,
+                        %(memory_post_response_time_ms)s, %(response_type)s, %(estimate)s, %(switch_lower)s, %(switch_upper)s,
+                        %(switch_row)s, %(switch_direction)s, %(switch_status)s, %(monotonic)s,
+                        %(response_time_ms)s, %(prompt)s, %(payload)s, %(source_timestamp)s, %(timestamp)s
+                    )
+                    ON CONFLICT (session_id, pwf_trial) DO UPDATE SET
+                        student_id = EXCLUDED.student_id,
+                        name = EXCLUDED.name,
+                        study_mode = EXCLUDED.study_mode,
+                        participant = EXCLUDED.participant,
+                        assignment_group = EXCLUDED.assignment_group,
+                        assignment_modulus = EXCLUDED.assignment_modulus,
+                        student_id_last3 = EXCLUDED.student_id_last3,
+                        student_id_last_digit = EXCLUDED.student_id_last_digit,
+                        amount_level = EXCLUDED.amount_level,
+                        amount_multiplier = EXCLUDED.amount_multiplier,
+                        assigned_block_id = EXCLUDED.assigned_block_id,
+                        block_id = EXCLUDED.block_id,
+                        block_title = EXCLUDED.block_title,
+                        task_id = EXCLUDED.task_id,
+                        is_anchor = EXCLUDED.is_anchor,
+                        task_index = EXCLUDED.task_index,
+                        task_type = EXCLUDED.task_type,
+                        task_mode = EXCLUDED.task_mode,
+                        time_limit_seconds = EXCLUDED.time_limit_seconds,
+                        timed_out = EXCLUDED.timed_out,
+                        time_over_seconds = EXCLUDED.time_over_seconds,
+                        has_memory_task = EXCLUDED.has_memory_task,
+                        memory_digits = EXCLUDED.memory_digits,
+                        memory_seconds = EXCLUDED.memory_seconds,
+                        memory_number = EXCLUDED.memory_number,
+                        memory_input_pre = EXCLUDED.memory_input_pre,
+                        memory_pre_correct = EXCLUDED.memory_pre_correct,
+                        memory_input_post = EXCLUDED.memory_input_post,
+                        memory_post_correct = EXCLUDED.memory_post_correct,
+                        memory_display_duration_ms = EXCLUDED.memory_display_duration_ms,
+                        memory_pre_response_time_ms = EXCLUDED.memory_pre_response_time_ms,
+                        memory_post_response_time_ms = EXCLUDED.memory_post_response_time_ms,
+                        response_type = EXCLUDED.response_type,
+                        estimate = EXCLUDED.estimate,
+                        switch_lower = EXCLUDED.switch_lower,
+                        switch_upper = EXCLUDED.switch_upper,
+                        switch_row = EXCLUDED.switch_row,
+                        switch_direction = EXCLUDED.switch_direction,
+                        switch_status = EXCLUDED.switch_status,
+                        monotonic = EXCLUDED.monotonic,
+                        response_time_ms = EXCLUDED.response_time_ms,
+                        prompt = EXCLUDED.prompt,
+                        payload = EXCLUDED.payload,
+                        source_timestamp = EXCLUDED.source_timestamp,
+                        timestamp = EXCLUDED.timestamp
+                    """,
+                    [{**record, "payload": Jsonb(record["payload"])} for record in flattened_records],
                 )
-                VALUES (
-                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s, %(pwf_trial)s,
-                    %(participant)s, %(assignment_group)s, %(assignment_modulus)s, %(student_id_last3)s,
-                    %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
-                    %(assigned_block_id)s, %(block_id)s, %(block_title)s, %(task_id)s, %(is_anchor)s,
-                    %(task_index)s, %(task_type)s, %(task_mode)s, %(time_limit_seconds)s, %(timed_out)s,
-                    %(time_over_seconds)s, %(has_memory_task)s, %(memory_digits)s, %(memory_seconds)s,
-                    %(memory_number)s, %(memory_input_pre)s, %(memory_pre_correct)s, %(memory_input_post)s,
-                    %(memory_post_correct)s, %(memory_display_duration_ms)s, %(memory_pre_response_time_ms)s,
-                    %(memory_post_response_time_ms)s, %(response_type)s, %(estimate)s, %(switch_lower)s, %(switch_upper)s,
-                    %(switch_row)s, %(switch_direction)s, %(switch_status)s, %(monotonic)s,
-                    %(response_time_ms)s, %(prompt)s, %(payload)s, %(source_timestamp)s, %(timestamp)s
-                )
-                ON CONFLICT (session_id, pwf_trial) DO UPDATE SET
-                    student_id = EXCLUDED.student_id,
-                    name = EXCLUDED.name,
-                    study_mode = EXCLUDED.study_mode,
-                    participant = EXCLUDED.participant,
-                    assignment_group = EXCLUDED.assignment_group,
-                    assignment_modulus = EXCLUDED.assignment_modulus,
-                    student_id_last3 = EXCLUDED.student_id_last3,
-                    student_id_last_digit = EXCLUDED.student_id_last_digit,
-                    amount_level = EXCLUDED.amount_level,
-                    amount_multiplier = EXCLUDED.amount_multiplier,
-                    assigned_block_id = EXCLUDED.assigned_block_id,
-                    block_id = EXCLUDED.block_id,
-                    block_title = EXCLUDED.block_title,
-                    task_id = EXCLUDED.task_id,
-                    is_anchor = EXCLUDED.is_anchor,
-                    task_index = EXCLUDED.task_index,
-                    task_type = EXCLUDED.task_type,
-                    task_mode = EXCLUDED.task_mode,
-                    time_limit_seconds = EXCLUDED.time_limit_seconds,
-                    timed_out = EXCLUDED.timed_out,
-                    time_over_seconds = EXCLUDED.time_over_seconds,
-                    has_memory_task = EXCLUDED.has_memory_task,
-                    memory_digits = EXCLUDED.memory_digits,
-                    memory_seconds = EXCLUDED.memory_seconds,
-                    memory_number = EXCLUDED.memory_number,
-                    memory_input_pre = EXCLUDED.memory_input_pre,
-                    memory_pre_correct = EXCLUDED.memory_pre_correct,
-                    memory_input_post = EXCLUDED.memory_input_post,
-                    memory_post_correct = EXCLUDED.memory_post_correct,
-                    memory_display_duration_ms = EXCLUDED.memory_display_duration_ms,
-                    memory_pre_response_time_ms = EXCLUDED.memory_pre_response_time_ms,
-                    memory_post_response_time_ms = EXCLUDED.memory_post_response_time_ms,
-                    response_type = EXCLUDED.response_type,
-                    estimate = EXCLUDED.estimate,
-                    switch_lower = EXCLUDED.switch_lower,
-                    switch_upper = EXCLUDED.switch_upper,
-                    switch_row = EXCLUDED.switch_row,
-                    switch_direction = EXCLUDED.switch_direction,
-                    switch_status = EXCLUDED.switch_status,
-                    monotonic = EXCLUDED.monotonic,
-                    response_time_ms = EXCLUDED.response_time_ms,
-                    prompt = EXCLUDED.prompt,
-                    payload = EXCLUDED.payload,
-                    source_timestamp = EXCLUDED.source_timestamp,
-                    timestamp = EXCLUDED.timestamp
-                """,
-                [{**record, "payload": Jsonb(record["payload"])} for record in flattened_records],
-            )
-        conn.commit()
-    if records:
-        touch_session(records[0]["session_id"], "in_progress")
+            conn.commit()
+        if records:
+            touch_session(records[0]["session_id"], "in_progress")
+
+    _with_retry(write_records)
 
 
 def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:

@@ -5,6 +5,7 @@
   "scripts": {
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
     "dev": "npm --prefix frontend run dev",
-    "preview": "npm --prefix frontend run preview"
+    "preview": "npm --prefix frontend run preview",
+    "stress:test": "node scripts/stress-test.mjs"
   }
 }
