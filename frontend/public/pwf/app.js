@@ -371,7 +371,6 @@ function restoreState(expectedParticipant = "") {
     "practiceSummary",
     "timePressureIntro",
     "memoryDisplay",
-    "memoryPreRecall",
     "task",
     "memoryPostRecall",
     "feedback",
@@ -381,9 +380,10 @@ function restoreState(expectedParticipant = "") {
     : records.length >= block.tasks.length
     ? "finish"
     : "task";
+  const normalizedPhase = saved.phase === "memoryPreRecall" ? "task" : savedPhase;
 
   Object.assign(state, {
-    phase: savedPhase,
+    phase: normalizedPhase,
     participant: savedParticipant,
     assignment,
     blockIndex,
@@ -391,15 +391,15 @@ function restoreState(expectedParticipant = "") {
     runtime: null,
     records,
     blockStartedAt: Date.now(),
-    taskStartedAt: savedPhase === "timePressureIntro" ? null : Date.now(),
+    taskStartedAt: normalizedPhase === "timePressureIntro" ? null : Date.now(),
     taskOrder,
     taskModes: Array.isArray(saved.taskModes) ? saved.taskModes : [],
     taskTimedOut: Boolean(saved.taskTimedOut),
-    memoryChallenge: normalizeMemoryChallenge(saved.memoryChallenge, boundedTaskIndex, savedPhase),
+    memoryChallenge: normalizeMemoryChallenge(saved.memoryChallenge, boundedTaskIndex, normalizedPhase),
     csvDownloaded: Boolean(saved.csvDownloaded),
     error: "",
   });
-  if (currentTaskMode() === MODE_NUMBER_MEMORY && !state.memoryChallenge && ["memoryDisplay", "memoryPreRecall", "task", "memoryPostRecall"].includes(state.phase)) {
+  if (currentTaskMode() === MODE_NUMBER_MEMORY && !state.memoryChallenge && ["memoryDisplay", "task", "memoryPostRecall"].includes(state.phase)) {
     state.phase = "memoryDisplay";
     state.memoryChallenge = createMemoryChallenge(state.taskIndex);
   }
@@ -420,7 +420,6 @@ function render() {
   if (state.phase === "practiceSummary") return renderPracticeSummary();
   if (state.phase === "timePressureIntro") return renderTimePressureIntro();
   if (state.phase === "memoryDisplay") return renderMemoryDisplay();
-  if (state.phase === "memoryPreRecall") return renderMemoryRecall("pre");
   if (state.phase === "task") return renderTask();
   if (state.phase === "memoryPostRecall") return renderMemoryRecall("post");
   if (state.phase === "feedback") return renderFeedback();
@@ -746,7 +745,7 @@ function taskModeAt(index) {
 }
 
 function currentTaskMode() {
-  if (!["timePressureIntro", "memoryDisplay", "memoryPreRecall", "task", "memoryPostRecall"].includes(state.phase)) return MODE_NORMAL;
+  if (!["timePressureIntro", "memoryDisplay", "task", "memoryPostRecall"].includes(state.phase)) return MODE_NORMAL;
   return taskModeAt(state.taskIndex);
 }
 
@@ -928,7 +927,7 @@ function createMemoryChallenge(taskIndex) {
 
 function normalizeMemoryChallenge(value, taskIndex, phase) {
   if (!value || typeof value !== "object") return null;
-  if (!["memoryDisplay", "memoryPreRecall", "task", "memoryPostRecall"].includes(phase)) return null;
+  if (!["memoryDisplay", "task", "memoryPostRecall"].includes(phase)) return null;
   const number = String(value.number ?? "");
   if (!isValidMemoryNumber(number)) return null;
   return {
@@ -938,10 +937,10 @@ function normalizeMemoryChallenge(value, taskIndex, phase) {
     seconds: Number(value.seconds) || NUMBER_MEMORY_SECONDS,
     displayStartedAt: Number(value.displayStartedAt) || Date.now(),
     displayEndedAt: Number(value.displayEndedAt) || null,
-    preStartedAt: Number(value.preStartedAt) || null,
-    preInput: String(value.preInput ?? ""),
-    preCorrect: typeof value.preCorrect === "boolean" ? value.preCorrect : null,
-    preResponseTimeMs: Number.isFinite(Number(value.preResponseTimeMs)) ? Number(value.preResponseTimeMs) : null,
+    preStartedAt: null,
+    preInput: "",
+    preCorrect: null,
+    preResponseTimeMs: null,
     postStartedAt: Number(value.postStartedAt) || null,
     postInput: String(value.postInput ?? ""),
     postCorrect: typeof value.postCorrect === "boolean" ? value.postCorrect : null,
@@ -986,15 +985,17 @@ function renderMemoryDisplay() {
             <div class="memory-progress-fill" id="memoryProgressFill" style="width:${memoryProgressPercent(remainingMs)}%"></div>
           </div>
         </div>
-        <p class="muted">時間が終わると入力画面へ進みます。</p>
+        <p class="muted">時間が終わると課題へ進みます。</p>
       </section>
     </main>
   `;
   const finishDisplay = () => {
     clearMemoryTimer();
     challenge.displayEndedAt = Date.now();
-    challenge.preStartedAt = Date.now();
-    state.phase = "memoryPreRecall";
+    state.phase = "task";
+    state.runtime = null;
+    state.taskStartedAt = Date.now();
+    state.taskTimedOut = false;
     state.error = "";
     saveState();
     render();
@@ -1030,13 +1031,11 @@ function memoryProgressPercent(remainingMs) {
 
 function renderMemoryRecall(stage) {
   const challenge = ensureMemoryChallenge();
-  const isPost = stage === "post";
-  const task = currentTask();
   app.innerHTML = `
     <main class="screen narrow-screen">
       <section class="center-card">
         <div class="step-label">数字記憶</div>
-        <h2>${isPost ? "先ほどの数字をもう一度入力してください" : "表示された数字を入力してください"}</h2>
+        <h2>先ほどの数字を入力してください</h2>
         <form class="setup-form" id="memoryRecallForm">
           <div class="field memory-digit-field">
             <label>5桁の数字</label>
@@ -1077,26 +1076,13 @@ function submitMemoryRecall(stage) {
   }
   const challenge = ensureMemoryChallenge();
   const now = Date.now();
-  if (stage === "post") {
-    challenge.postInput = value;
-    challenge.postCorrect = value === challenge.number;
-    challenge.postResponseTimeMs = challenge.postStartedAt ? now - challenge.postStartedAt : null;
-    challenge.postCompleted = true;
-    updateCurrentMemoryRecord();
-    showCurrentTaskFeedback();
-    return;
-  }
-  challenge.preInput = value;
-  challenge.preCorrect = value === challenge.number;
-  challenge.preResponseTimeMs = challenge.preStartedAt ? now - challenge.preStartedAt : null;
-  state.phase = "task";
-  state.runtime = null;
-  state.taskStartedAt = Date.now();
-  state.taskTimedOut = false;
-  state.error = "";
-  saveState();
-  render();
-  scrollToTopAfterRender();
+  if (stage !== "post") return;
+  challenge.postInput = value;
+  challenge.postCorrect = value === challenge.number;
+  challenge.postResponseTimeMs = challenge.postStartedAt ? now - challenge.postStartedAt : null;
+  challenge.postCompleted = true;
+  updateCurrentMemoryRecord();
+  showCurrentTaskFeedback();
 }
 
 function bindMemoryDigitInputs(stage) {
@@ -2149,7 +2135,7 @@ function feedbackPenaltyReasons(record) {
   if (record.task_mode === MODE_TIME_PRESSURE && record.timed_out) {
     reasons.push("制限時間を超過したため、獲得金額は ¥0 です。");
   }
-  if (record.has_memory_task && (record.memory_pre_correct === false || record.memory_post_correct === false)) {
+  if (record.has_memory_task && record.memory_post_correct === false) {
     reasons.push("数字記憶の回答が正しくなかったため、獲得金額は ¥0 です。");
   }
   return reasons;
@@ -2427,12 +2413,12 @@ function memoryRecordFields() {
     memory_digits: challenge.digits ?? NUMBER_MEMORY_DIGITS,
     memory_seconds: challenge.seconds ?? NUMBER_MEMORY_SECONDS,
     memory_number: challenge.number ?? "",
-    memory_input_pre: challenge.preInput ?? "",
-    memory_pre_correct: challenge.preCorrect,
+    memory_input_pre: "",
+    memory_pre_correct: "",
     memory_input_post: challenge.postInput ?? "",
     memory_post_correct: challenge.postCorrect,
     memory_display_duration_ms: challenge.displayStartedAt && challenge.displayEndedAt ? challenge.displayEndedAt - challenge.displayStartedAt : "",
-    memory_pre_response_time_ms: challenge.preResponseTimeMs ?? "",
+    memory_pre_response_time_ms: "",
     memory_post_response_time_ms: challenge.postResponseTimeMs ?? "",
   };
 }
@@ -2950,10 +2936,10 @@ function smokeMemoryChallengeIfNeeded(taskIndex, forceWrong = false) {
     seconds: NUMBER_MEMORY_SECONDS,
     displayStartedAt: now - NUMBER_MEMORY_SECONDS * 1000,
     displayEndedAt: now,
-    preStartedAt: now - 1200,
-    preInput: input,
-    preCorrect: !forceWrong,
-    preResponseTimeMs: 1200,
+    preStartedAt: null,
+    preInput: "",
+    preCorrect: null,
+    preResponseTimeMs: null,
     postStartedAt: now - 900,
     postInput: input,
     postCorrect: !forceWrong,
