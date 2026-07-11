@@ -97,9 +97,7 @@ function isLocalTarget(baseUrl) {
 function loadPwfBlocks(appFile) {
   const fallback = [
     { id: "choi-2022-study2", title: "実験C", tasks: Array.from({ length: 12 }, (_, index) => ({ taskId: `choi-stress-${index + 1}`, type: "mpl" })) },
-    { id: "abdellaoui-2000", title: "実験A", tasks: Array.from({ length: 12 }, (_, index) => ({ taskId: `abdellaoui-stress-${index + 1}`, type: index < 8 ? "bisection" : "probabilityBisection" })) },
     { id: "bruhin-2010", title: "実験B", tasks: Array.from({ length: 12 }, (_, index) => ({ taskId: `bruhin-stress-${index + 1}`, type: "mpl" })) },
-    { id: "experiment-g", title: "実験G", tasks: Array.from({ length: 20 }, (_, index) => ({ taskId: `experiment-g-stress-${index + 1}`, type: "mpl", category: index < 16 ? "binary" : "ternary" })) },
   ];
 
   if (!fs.existsSync(appFile)) {

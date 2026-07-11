@@ -8,12 +8,10 @@ Terminology note: the module formerly described as `utility-curvature` is now ca
 
 The experiment consists of a PWF module and a CI module.
 
-The PWF module contains four blocks:
+The PWF module contains two blocks:
 
-- Abdellaoui (2000)
 - Bruhin et al. (2010)
 - Choi et al. (2022), Study 2
-- Gonzalez and Wu (1999)
 
 The CI module elicits the responses needed to test Compound Invariance. Each CI
 trial includes four steps; its payment details are recorded, and one CI trial is

@@ -1,45 +1,18 @@
 const SWITCH_B_TO_A = "B_TO_A";
 const SWITCH_A_TO_B = "A_TO_B";
-const ASSIGNMENT_MODULUS = 4;
+const ASSIGNMENT_MODULUS = 2;
 const DEFAULT_TIME_PRESSURE_SECONDS = 12;
-const ABDELLAOUI_TIME_PRESSURE_SECONDS = 18;
 const TIME_PRESSURE_TASKS_PER_BLOCK = 5;
 const NUMBER_MEMORY_SECONDS = 5;
 const NUMBER_MEMORY_DIGITS = 5;
 const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
-const EXPERIMENT_G_CE_LIST_ROWS = 11;
-const EXPERIMENT_G_AMOUNT_MULTIPLIER = 10;
-const EXPERIMENT_G_MODE_STRATEGY = "half_by_category_no_memory";
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-07-experiment-g-16-4-x10";
+const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks";
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
-const ABDELLAOUI_PWF_BASELINE = 1000;
-const EXPERIMENT_G_TASK_SPECS = [
-  ["binary", [[0.05, 25], [0.95, 0]]],
-  ["binary", [[0.50, 50], [0.50, 0]]],
-  ["binary", [[0.95, 75], [0.05, 0]]],
-  ["binary", [[0.10, 100], [0.90, 0]]],
-  ["binary", [[0.60, 150], [0.40, 0]]],
-  ["binary", [[0.99, 200], [0.01, 0]]],
-  ["binary", [[0.25, 400], [0.75, 0]]],
-  ["binary", [[0.75, 800], [0.25, 0]]],
-  ["binary", [[0.01, 50], [0.99, 25]]],
-  ["binary", [[0.40, 75], [0.60, 50]]],
-  ["binary", [[0.90, 100], [0.10, 50]]],
-  ["binary", [[0.05, 150], [0.95, 50]]],
-  ["binary", [[0.50, 150], [0.50, 100]]],
-  ["binary", [[0.95, 200], [0.05, 100]]],
-  ["binary", [[0.10, 200], [0.90, 150]]],
-  ["binary", [[0.75, 100], [0.25, 0]]],
-  ["ternary", [[0.05, 200], [0.45, 100], [0.50, 0]]],
-  ["ternary", [[0.25, 800], [0.50, 400], [0.25, 0]]],
-  ["ternary", [[0.40, 150], [0.50, 50], [0.10, 0]]],
-  ["ternary", [[0.75, 200], [0.20, 150], [0.05, 50]]],
-];
 
 const BASE_BLOCKS = createBlocks(1);
 
@@ -71,30 +44,6 @@ function createBlocks(amountMultiplier = 1) {
     ],
   },
   {
-    id: "abdellaoui-2000",
-    title: "実験A",
-    label: "8問 + PWF 4問",
-    method: "utility bisection + gain-domain probability bisection",
-    intro:
-      "このブロックでは、段階的な比較によって、2つのくじが同じくらい魅力的になる金額を探します。その後、利得領域の確率加重を測るための確率比較を行います。",
-    assumptions:
-      "金額比較は5回、確率比較は6回の比較で終了します。金額はすべて日本円表示です。",
-    tasks: [
-      createBisectionTask("abdellaoui-1", "2/3", "1/3", 1000, 500, 0, 1000, 6000, m),
-      createBisectionTask("abdellaoui-2", "2/3", "1/3", 2000, 1000, 0, 2000, 8000, m),
-      createBisectionTask("abdellaoui-3", "1/2", "1/2", 3000, 1000, 0, 3000, 9000, m),
-      createBisectionTask("abdellaoui-4", "1/2", "1/2", 4000, 2000, 0, 4000, 12000, m),
-      createBisectionTask("abdellaoui-5", "1/3", "2/3", 6000, 1000, 0, 6000, 16000, m),
-      createBisectionTask("abdellaoui-6", "1/3", "2/3", 8000, 2000, 0, 8000, 20000, m),
-      createBisectionTask("abdellaoui-7", "3/4", "1/4", 3000, 1000, 0, 3000, 9000, m),
-      createBisectionTask("abdellaoui-8", "1/4", "3/4", 10000, 2000, 0, 10000, 26000, m),
-      createProbabilityBisectionTask("abdellaoui-p1", "abdellaoui-1", "abdellaoui-6", 1 / 6, m),
-      createProbabilityBisectionTask("abdellaoui-p2", "abdellaoui-2", "abdellaoui-6", 2 / 6, m),
-      createProbabilityBisectionTask("abdellaoui-p3", "abdellaoui-3", "abdellaoui-6", 3 / 6, m),
-      createProbabilityBisectionTask("abdellaoui-p4", "abdellaoui-4", "abdellaoui-6", 4 / 6, m),
-    ],
-  },
-  {
     id: "bruhin-2010",
     title: "実験B",
     label: "12表",
@@ -117,20 +66,6 @@ function createBlocks(amountMultiplier = 1) {
       createMplTask(lotteryText(60, 2500, 40, 500, m), "確実な金額", "JPY", range(2500 * m, 500 * m, 20), "JPY", { taskId: "bruhin-sheet-12" }),
       createMplTask(lotteryText(15, 12000, 85, 0, m), "確実な金額", "JPY", range(12000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-13" }),
     ],
-  },
-  {
-    id: "experiment-g",
-    title: "実験G",
-    label: "20リスト",
-    method: "Gonzalez & Wu fractional CE lists",
-    amountLevel: "x10",
-    amountMultiplier: EXPERIMENT_G_AMOUNT_MULTIPLIER,
-    modeStrategy: EXPERIMENT_G_MODE_STRATEGY,
-    intro:
-      "このブロックでは、2つまたは3つの結果をもつくじと確実な金額を比べる20個のリストに回答します。",
-    assumptions:
-      "各リストで切り替える行を1回クリックすると、上下の行が自動入力されます。",
-    tasks: createExperimentGTasks(EXPERIMENT_G_AMOUNT_MULTIPLIER),
   },
   ];
 }
@@ -251,52 +186,8 @@ function createProbabilityMatchTask(taskId, unknown, sureSymbol, highSymbol, bas
   };
 }
 
-function createProbabilityBisectionTask(taskId, sureTaskId, highTaskId, nominalWeightTarget, amountMultiplier = 1) {
-  return {
-    taskId,
-    isAnchor: false,
-    type: "probabilityBisection",
-    prompt: "確実な金額とくじを比べて、より好ましい選択肢を選んでください。選択に応じて次の候補確率が自動で変わります。",
-    sureTaskId,
-    highTaskId,
-    baselineAmount: ABDELLAOUI_PWF_BASELINE * amountMultiplier,
-    nominalWeightTarget,
-    unit: "%",
-    low: 0.01,
-    high: 0.99,
-    rounds: 6,
-  };
-}
-
 function lotteryText(firstProbability, firstAmount, secondProbability, secondAmount, amountMultiplier = 1) {
   return `${firstProbability}%の確率で ${formatYen(firstAmount * amountMultiplier)}、${secondProbability}%の確率で ${formatYen(secondAmount * amountMultiplier)}`;
-}
-
-function lotteryTextFromOutcomes(outcomes, amountMultiplier = 1) {
-  return outcomes
-    .map(([probability, amount]) => `${formatProbability(probability)}の確率で ${formatYen(amount * amountMultiplier)}`)
-    .join("、");
-}
-
-function createExperimentGTasks(amountMultiplier = 1) {
-  return EXPERIMENT_G_TASK_SPECS.map(([category, outcomes], index) => {
-    const scaledAmounts = outcomes.map(([, amount]) => amount * amountMultiplier);
-    const minAmount = Math.min(...scaledAmounts);
-    const maxAmount = Math.max(...scaledAmounts);
-    return createMplTask(
-      lotteryTextFromOutcomes(outcomes, amountMultiplier),
-      "確実な金額",
-      "JPY",
-      range(maxAmount, minAmount, EXPERIMENT_G_CE_LIST_ROWS),
-      "JPY",
-      {
-        taskId: `experiment-g-${index + 1}`,
-        category,
-        amountLevel: "x10",
-        amountMultiplier,
-      },
-    );
-  });
 }
 
 function formatYen(value) {
@@ -710,9 +601,7 @@ function startFormalTasks() {
 }
 
 function createTaskModes(blockOrTasks) {
-  const block = Array.isArray(blockOrTasks) ? null : blockOrTasks;
   const tasks = Array.isArray(blockOrTasks) ? blockOrTasks : blockOrTasks.tasks;
-  if (block?.modeStrategy === EXPERIMENT_G_MODE_STRATEGY) return createHalfCategoryTimePressureModes(tasks);
   const taskCount = tasks.length;
   const modes = Array.from({ length: taskCount }, () => MODE_NORMAL);
   const randomizedIndexes = shuffle(Array.from({ length: Math.max(0, taskCount - 1) }, (_, index) => index + 1));
@@ -727,23 +616,6 @@ function createTaskModes(blockOrTasks) {
   return modes;
 }
 
-function createHalfCategoryTimePressureModes(tasks) {
-  const modes = Array.from({ length: tasks.length }, () => MODE_NORMAL);
-  const categories = [...new Set(tasks.map((task) => task.category).filter(Boolean))];
-  categories.forEach((category) => {
-    const categoryIndexes = tasks
-      .map((task, index) => ({ task, index }))
-      .filter(({ task, index }) => task.category === category && index > 0)
-      .map(({ index }) => index);
-    const categoryTaskCount = tasks.filter((task) => task.category === category).length;
-    const timePressureCount = Math.min(Math.floor(categoryTaskCount / 2), categoryIndexes.length);
-    shuffle(categoryIndexes).slice(0, timePressureCount).forEach((index) => {
-      modes[index] = MODE_TIME_PRESSURE;
-    });
-  });
-  return modes;
-}
-
 function shuffle(items) {
   const copy = [...items];
   for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -754,9 +626,7 @@ function shuffle(items) {
 }
 
 function createTaskOrder(block, participant) {
-  const indexes = Array.from({ length: block.tasks.length }, (_, index) => index);
-  if (block.id !== "experiment-g") return indexes;
-  return seededShuffle(indexes, `${DESIGN_VERSION}:${participant}:${block.id}`);
+  return Array.from({ length: block.tasks.length }, (_, index) => index);
 }
 
 function normalizeTaskOrder(block, savedOrder, participant) {
@@ -772,36 +642,6 @@ function normalizeTaskOrder(block, savedOrder, participant) {
   return createTaskOrder(block, participant);
 }
 
-function seededShuffle(items, seedText) {
-  const copy = [...items];
-  const random = seededRandom(seedText);
-  for (let index = copy.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(random() * (index + 1));
-    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
-  }
-  return copy;
-}
-
-function seededRandom(seedText) {
-  let seed = hashString(seedText);
-  return () => {
-    seed += 0x6D2B79F5;
-    let value = seed;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function hashString(value) {
-  let hash = 2166136261;
-  for (const char of String(value)) {
-    hash ^= char.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
 function taskModeAt(index) {
   return state.taskModes[index] ?? MODE_NORMAL;
 }
@@ -815,10 +655,8 @@ function isTimePressureTask() {
   return state.phase === "task" && currentTaskMode() === MODE_TIME_PRESSURE;
 }
 
-function timePressureSecondsForBlock(block = currentBlock()) {
-  return block?.id === "abdellaoui-2000"
-    ? ABDELLAOUI_TIME_PRESSURE_SECONDS
-    : DEFAULT_TIME_PRESSURE_SECONDS;
+function timePressureSecondsForBlock() {
+  return DEFAULT_TIME_PRESSURE_SECONDS;
 }
 
 function clearTaskTimer() {
@@ -893,12 +731,6 @@ function timerProgressPercent(remainingMs, exceededMs) {
 function currentPracticeTask() {
   const block = currentBlock();
   const m = 1;
-  if (block.id === "abdellaoui-2000") {
-    const task = createBisectionTask("practice-abdellaoui", "1/2", "1/2", 1000, 500, 0, 0, 3000, m);
-    task.prompt = "練習問題です。より好ましい選択肢を選ぶと、次の候補金額が自動で変わります。";
-    task.rounds = 3;
-    return task;
-  }
   return createMplTask(lotteryText(50, 1000, 50, 0, m), "確実な金額", "JPY", range(1000 * m, 0, 6), "JPY", {
     taskId: `practice-${block.id}`,
     prompt: "練習問題です。くじと確実な金額のどちらを選ぶか、切り替える行をクリックしてください。",
@@ -3074,7 +2906,6 @@ function runSmokeTest() {
     if (state.taskModes[0] !== MODE_NORMAL) {
       failures.push(`${block.title} first task mode ${state.taskModes[0]}, expected normal`);
     }
-    validateModeStrategy(block, state.taskModes, failures, "generated");
     block.tasks.forEach((task, taskIndex) => {
       state.taskIndex = taskIndex;
       const mode = currentTaskMode();
@@ -3095,7 +2926,7 @@ function runSmokeTest() {
   });
 
   const taskTypes = new Set(state.records.map((record) => record.task_type));
-  ["bisection", "probabilityBisection", "mpl"].forEach((type) => {
+  ["mpl"].forEach((type) => {
     if (!taskTypes.has(type)) failures.push(`missing task type: ${type}`);
   });
   if (state.records.length !== expectedRecords) {
@@ -3170,20 +3001,10 @@ function countModes(modes) {
 }
 
 function expectedTaskCountForBlock(block) {
-  return block?.id === "experiment-g" ? 20 : 12;
+  return block?.tasks?.length ?? 0;
 }
 
 function expectedTaskModeCounts(blockOrTaskCount) {
-  if (typeof blockOrTaskCount === "object" && blockOrTaskCount?.modeStrategy === EXPERIMENT_G_MODE_STRATEGY) {
-    const tasks = blockOrTaskCount.tasks;
-    const timePressureCount = categoryNames(tasks)
-      .reduce((sum, category) => sum + Math.floor(tasks.filter((task) => task.category === category).length / 2), 0);
-    return {
-      [MODE_NORMAL]: tasks.length - timePressureCount,
-      [MODE_TIME_PRESSURE]: timePressureCount,
-      [MODE_NUMBER_MEMORY]: 0,
-    };
-  }
   const taskCount = typeof blockOrTaskCount === "number" ? blockOrTaskCount : blockOrTaskCount.tasks.length;
   const pressureAssignable = Math.max(0, taskCount - 1);
   const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, pressureAssignable);
@@ -3193,26 +3014,6 @@ function expectedTaskModeCounts(blockOrTaskCount) {
     [MODE_TIME_PRESSURE]: timePressureCount,
     [MODE_NUMBER_MEMORY]: numberMemoryCount,
   };
-}
-
-function categoryNames(tasks) {
-  return [...new Set(tasks.map((task) => task.category).filter(Boolean))];
-}
-
-function validateModeStrategy(block, modes, failures, label) {
-  if (block.modeStrategy !== EXPERIMENT_G_MODE_STRATEGY) return;
-  categoryNames(block.tasks).forEach((category) => {
-    const expectedTimePressure = Math.floor(block.tasks.filter((task) => task.category === category).length / 2);
-    const actualTimePressure = block.tasks.reduce((count, task, index) => (
-      task.category === category && modes[index] === MODE_TIME_PRESSURE ? count + 1 : count
-    ), 0);
-    if (actualTimePressure !== expectedTimePressure) {
-      failures.push(`${block.title} ${label} ${category} time-pressure count ${actualTimePressure}, expected ${expectedTimePressure}`);
-    }
-  });
-  if (modes.some((mode) => mode === MODE_NUMBER_MEMORY)) {
-    failures.push(`${block.title} ${label} unexpectedly has number-memory tasks`);
-  }
 }
 
 function smokeMemoryChallengeIfNeeded(taskIndex, forceWrong = false) {
@@ -3387,7 +3188,7 @@ function renderSmokeResult(failures, expectedRecords) {
         <h1>${passed ? "Smoke test passed" : "Smoke test failed"}</h1>
         <p data-smoke-status="${passed ? "passed" : "failed"}">
           ${passed
-            ? `生成了 ${state.records.length} / ${expectedRecords} 条 task-level 记录，覆盖 bisection、probability bisection、MPL。`
+            ? `生成了 ${state.records.length} / ${expectedRecords} 条 task-level 记录，覆盖 MPL。`
             : `发现 ${failures.length} 个问题。`}
         </p>
         <div class="result-list">
