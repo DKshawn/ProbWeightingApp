@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   completePwfSession,
+  createCiSettlement,
   saveCiResult,
   savePwfResults,
   startSession,
@@ -28,9 +29,9 @@ function firstUnansweredTrialIndex(trials, savedTrialResults) {
   return index < 0 ? trials.length : index;
 }
 
-function stepForTrialResume(trials, trialIndex) {
+function stepForTrialResume(trials, trialIndex, ciSettlement) {
   if (!trials.length) return 5;
-  if (trialIndex >= trials.length) return 7;
+  if (trialIndex >= trials.length) return ciSettlement ? 7 : 9;
   if (trialIndex > 0 && trials[trialIndex]?.block !== trials[trialIndex - 1]?.block) return 6;
   return 1;
 }
@@ -41,6 +42,56 @@ function upsertPwfRecord(records, nextRecord) {
   return [...withoutDuplicate, nextRecord].sort((a, b) => Number(a.pwf_trial) - Number(b.pwf_trial));
 }
 
+function upsertCiRecord(records, nextRecord) {
+  const withoutDuplicate = records.filter((record) => Number(record.trial) !== Number(nextRecord.trial));
+  return [...withoutDuplicate, nextRecord].sort((a, b) => Number(a.trial) - Number(b.trial));
+}
+
+function settleStepFeedback(step, options, selectedOption, selectionMethod) {
+  const randomDraw = Math.random();
+  const rewardAmount = randomDraw < selectedOption.probability ? selectedOption.amount : 0;
+  return {
+    step,
+    options,
+    selectedOption: selectedOption.label,
+    rewardAmount,
+    selectionMethod,
+    randomDraw,
+  };
+}
+
+function paymentDetail(feedback) {
+  return {
+    selected_option: feedback.selectedOption,
+    selection_method: feedback.selectionMethod,
+    probability: feedback.options.find((option) => option.label === feedback.selectedOption)?.probability ?? 0,
+    option_amount: feedback.options.find((option) => option.label === feedback.selectedOption)?.amount ?? 0,
+    random_draw: feedback.randomDraw,
+    reward_amount: feedback.rewardAmount,
+  };
+}
+
+function paymentTotal(paymentDetails) {
+  return Object.values(paymentDetails).reduce((total, detail) => total + Number(detail?.reward_amount || 0), 0);
+}
+
+function createStepFeedback(step, options) {
+  const selectedOption = options[Math.floor(Math.random() * options.length)];
+  return settleStepFeedback(step, options, selectedOption, "random_indifference");
+}
+
+function createStep4Feedback(choice, options) {
+  const selectedOption = choice === "X"
+    ? options[0]
+    : choice === "Y"
+    ? options[1]
+    : options[Math.floor(Math.random() * options.length)];
+  const selectionMethod = choice === "Indifferent"
+    ? "random_indifferent_choice"
+    : "participant_choice";
+  return settleStepFeedback(4, options, selectedOption, selectionMethod);
+}
+
 export function useSession() {
   const [sessionId, setSessionId] = useState(null);
   const [studentId, setStudentId] = useState("");
@@ -49,10 +100,13 @@ export function useSession() {
   const [experimentMode, setExperimentMode] = useState("normal");
   const [timePressureSeconds, setTimePressureSeconds] = useState(0);
   const [pwfRecords, setPwfRecords] = useState([]);
+  const [ciRecords, setCiRecords] = useState([]);
   const [trials, setTrials] = useState([]);
   const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [currentStep, setCurrentStep] = useState(0); // 0=pwf,1,2,3,4,5=finish,6=block_break,7=pwf_settlement
+  const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement
   const [stepData, setStepData] = useState({});
+  const [stepFeedback, setStepFeedback] = useState(null);
+  const [ciSettlement, setCiSettlement] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const pendingOperationsRef = useRef(0);
@@ -103,6 +157,7 @@ export function useSession() {
         const resolvedTrials = data.trials || [];
         const savedTrialResults = data.saved_ci_results || [];
         const savedPwfResults = data.saved_pwf_results || [];
+        const savedCiSettlement = data.ci_settlement || null;
         const pwfCompleted = Boolean(data.pwf_completed) || savedTrialResults.length > 0;
         const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
         const session = {
@@ -127,10 +182,12 @@ export function useSession() {
         setExperimentMode(session.experimentMode);
         setTimePressureSeconds(session.timePressureSeconds);
         setPwfRecords(session.savedPwfResults);
+        setCiRecords(session.savedTrialResults);
+        setCiSettlement(savedCiSettlement);
         setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
         if (pwfCompleted) {
-          setCurrentStep(stepForTrialResume(resolvedTrials, resumeTrialIndex));
+          setCurrentStep(stepForTrialResume(resolvedTrials, resumeTrialIndex, savedCiSettlement));
         }
         return session;
       })
@@ -216,7 +273,7 @@ export function useSession() {
       const resumeTrialIndex = firstUnansweredTrialIndex(session.trials, session.savedTrialResults);
       setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(session.trials.length - 1, 0)));
       setStepData({});
-      setCurrentStep(stepForTrialResume(session.trials, resumeTrialIndex));
+      setCurrentStep(stepForTrialResume(session.trials, resumeTrialIndex, null));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -225,18 +282,62 @@ export function useSession() {
   }
 
   function submitStep1(y) {
-    setStepData((prev) => ({ ...prev, y }));
-    setCurrentStep(2);
+    const feedback = createStepFeedback(1, [
+      { label: "A", probability: currentTrial.p, amount: currentTrial.x },
+      { label: "B", probability: currentTrial.q, amount: y },
+    ]);
+    setStepFeedback(feedback);
+    setStepData((prev) => ({ ...prev, y, paymentDetails: { ...prev.paymentDetails, step1: paymentDetail(feedback) } }));
+    setCurrentStep(8);
   }
 
   function submitStep2(s) {
-    setStepData((prev) => ({ ...prev, s }));
-    setCurrentStep(3);
+    const feedback = createStepFeedback(2, [
+      { label: "A", probability: currentTrial.r, amount: currentTrial.x },
+      { label: "B", probability: s, amount: stepData.y },
+    ]);
+    setStepFeedback(feedback);
+    setStepData((prev) => ({ ...prev, s, paymentDetails: { ...prev.paymentDetails, step2: paymentDetail(feedback) } }));
+    setCurrentStep(8);
   }
 
   function submitStep3(yPrime) {
-    setStepData((prev) => ({ ...prev, y_prime: yPrime }));
-    setCurrentStep(4);
+    const N = currentTrial.N;
+    const feedback = createStepFeedback(3, [
+      { label: "A", probability: currentTrial.p ** N, amount: currentTrial.x_prime },
+      { label: "B", probability: currentTrial.q ** N, amount: yPrime },
+    ]);
+    setStepFeedback(feedback);
+    setStepData((prev) => ({ ...prev, y_prime: yPrime, paymentDetails: { ...prev.paymentDetails, step3: paymentDetail(feedback) } }));
+    setCurrentStep(8);
+  }
+
+  function continueStepFeedback() {
+    const completedStep = Number(stepFeedback?.step);
+    setStepFeedback(null);
+    if (completedStep === 4) {
+      advanceAfterStep4();
+      return;
+    }
+    setCurrentStep(completedStep + 1);
+  }
+
+  function advanceAfterStep4() {
+    const nextIndex = currentTrialIndex + 1;
+    const nextTrial = trials[nextIndex];
+
+    if (nextIndex < totalTrials && nextTrial?.block !== currentTrial?.block) {
+      setCurrentTrialIndex(nextIndex);
+      setStepData({});
+      setCurrentStep(6);
+    } else if (nextIndex >= totalTrials) {
+      setStepData({});
+      setCurrentStep(9);
+    } else {
+      setCurrentTrialIndex(nextIndex);
+      setStepData({});
+      setCurrentStep(1);
+    }
   }
 
   async function submitStep4(choice, timing = {}) {
@@ -250,9 +351,20 @@ export function useSession() {
     const sN = parseFloat((stepData.s ** N).toFixed(10));
     const timedOut = Boolean(timing.timedOut || choice === "Timeout");
     const ciSatisfied = !timedOut && choice === "Indifferent";
+    const step4Feedback = timedOut
+      ? null
+      : createStep4Feedback(choice, [
+          { label: "A", probability: rN, amount: trial.x_prime },
+          { label: "B", probability: sN, amount: stepData.y_prime },
+        ]);
+    const paymentDetails = {
+      ...(stepData.paymentDetails || {}),
+      ...(step4Feedback ? { step4: paymentDetail(step4Feedback) } : {}),
+    };
+    const trialPaymentTotal = timedOut ? 0 : paymentTotal(paymentDetails);
 
     try {
-      await saveCiResult({
+      const record = {
         session_id: sessionId,
         student_id: studentId,
         name,
@@ -281,23 +393,19 @@ export function useSession() {
         ci_satisfied: ciSatisfied,
         response_time_ms: timing.responseTimeMs ?? null,
         timed_out: timedOut,
-      });
+        payment_details: paymentDetails,
+        trial_payment_total: trialPaymentTotal,
+      };
+      await saveCiResult(record);
+      setCiRecords((previous) => upsertCiRecord(previous, record));
 
-      const nextIndex = currentTrialIndex + 1;
-      const nextTrial = trials[nextIndex];
-
-      if (nextIndex < totalTrials && nextTrial?.block !== trial.block) {
-        setCurrentTrialIndex(nextIndex);
-        setStepData({});
-        setCurrentStep(6);
-      } else if (nextIndex >= totalTrials) {
-        setStepData({});
-        setCurrentStep(7);
-      } else {
-        setCurrentTrialIndex(nextIndex);
-        setStepData({});
-        setCurrentStep(1);
+      if (timedOut) {
+        advanceAfterStep4();
+        return;
       }
+
+      setStepFeedback(step4Feedback);
+      setCurrentStep(8);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -313,14 +421,37 @@ export function useSession() {
     setCurrentStep(5);
   }
 
+  const loadCiSettlement = useCallback(async () => {
+    if (!sessionId || ciSettlement) return;
+    pendingOperationsRef.current += 1;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await createCiSettlement(sessionId);
+      setCiSettlement(result.settlement);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      pendingOperationsRef.current = Math.max(0, pendingOperationsRef.current - 1);
+      if (pendingOperationsRef.current === 0) setLoading(false);
+    }
+  }, [ciSettlement, sessionId]);
+
+  function continueToPwfSettlement() {
+    setCurrentStep(7);
+  }
+
   return {
     studentId,
     pwfRecords,
+    ciRecords,
     trials,
     currentTrialIndex,
     currentStep,
     currentTrial,
     stepData,
+    stepFeedback,
+    ciSettlement,
     loading,
     error,
     handlePwfStart,
@@ -330,7 +461,10 @@ export function useSession() {
     submitStep2,
     submitStep3,
     submitStep4,
+    continueStepFeedback,
     startNextBlock,
+    loadCiSettlement,
+    continueToPwfSettlement,
     continueToFinish,
   };
 }

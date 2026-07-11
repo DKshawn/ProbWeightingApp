@@ -151,6 +151,7 @@ const state = {
   taskModes: [],
   taskTimedOut: false,
   memoryChallenge: null,
+  practiceFeedback: null,
   csvDownloaded: false,
   error: "",
 };
@@ -336,6 +337,7 @@ function saveState() {
     taskModes: state.taskModes,
     taskTimedOut: state.taskTimedOut,
     memoryChallenge: state.memoryChallenge,
+    practiceFeedback: state.practiceFeedback,
     csvDownloaded: state.csvDownloaded,
   }));
 }
@@ -364,10 +366,14 @@ function restoreState(expectedParticipant = "") {
     ? Math.max(0, Math.min(taskIndex, block.tasks.length - 1))
     : 0;
   const records = Array.isArray(saved.records) ? saved.records : [];
+  const practiceFeedback = saved.practiceFeedback && typeof saved.practiceFeedback === "object"
+    ? saved.practiceFeedback
+    : null;
   const savedPhase = [
     "setup",
     "blockIntro",
     "practice",
+    "practiceFeedback",
     "practiceSummary",
     "timePressureIntro",
     "memoryDisplay",
@@ -380,7 +386,11 @@ function restoreState(expectedParticipant = "") {
     : records.length >= block.tasks.length
     ? "finish"
     : "task";
-  const normalizedPhase = saved.phase === "memoryPreRecall" ? "task" : savedPhase;
+  const normalizedPhase = saved.phase === "practiceFeedback" && !practiceFeedback
+    ? "practiceSummary"
+    : saved.phase === "memoryPreRecall"
+    ? "task"
+    : savedPhase;
 
   Object.assign(state, {
     phase: normalizedPhase,
@@ -396,6 +406,7 @@ function restoreState(expectedParticipant = "") {
     taskModes: Array.isArray(saved.taskModes) ? saved.taskModes : [],
     taskTimedOut: Boolean(saved.taskTimedOut),
     memoryChallenge: normalizeMemoryChallenge(saved.memoryChallenge, boundedTaskIndex, normalizedPhase),
+    practiceFeedback: normalizedPhase === "practiceFeedback" ? practiceFeedback : null,
     csvDownloaded: Boolean(saved.csvDownloaded),
     error: "",
   });
@@ -417,6 +428,7 @@ function render() {
   if (state.phase === "setup") return renderSetup();
   if (state.phase === "blockIntro") return renderBlockIntro();
   if (state.phase === "practice") return renderPractice();
+  if (state.phase === "practiceFeedback") return renderPracticeFeedback();
   if (state.phase === "practiceSummary") return renderPracticeSummary();
   if (state.phase === "timePressureIntro") return renderTimePressureIntro();
   if (state.phase === "memoryDisplay") return renderMemoryDisplay();
@@ -471,6 +483,7 @@ function returnToSetupScreen() {
     taskOrder: [],
     taskTimedOut: false,
     memoryChallenge: null,
+    practiceFeedback: null,
     error: "",
   });
   render();
@@ -541,6 +554,7 @@ function renderSetup() {
     state.taskModes = [];
     state.taskTimedOut = false;
     state.memoryChallenge = null;
+    state.practiceFeedback = null;
     state.csvDownloaded = false;
     state.error = "";
     saveState();
@@ -578,6 +592,7 @@ function renderBlockIntro() {
     state.taskModes = createTaskModes(orderedBlock);
     state.taskTimedOut = false;
     state.memoryChallenge = null;
+    state.practiceFeedback = null;
     state.blockStartedAt = Date.now();
     state.taskStartedAt = Date.now();
     state.error = "";
@@ -631,18 +646,65 @@ function renderPracticeSummary() {
   document.getElementById("redoPractice").addEventListener("click", resetPractice);
 }
 
+function renderPracticeFeedback() {
+  const block = currentBlock();
+  const task = currentPracticeTask();
+  const practiceFeedback = state.practiceFeedback;
+  const feedback = practiceFeedback?.feedback;
+  if (!feedback) {
+    finishPracticeFeedback();
+    return;
+  }
+  const record = { payload: practiceFeedback.payload || {} };
+  app.innerHTML = `
+    <main class="screen">
+      <section class="mode-panel practice-mode">
+        <strong>練習問題の結果</strong>
+        <span>この抽選結果は練習用であり、報酬には含まれません。</span>
+      </section>
+      <section class="feedback-card practice-feedback-card">
+        <div class="step-label">練習の抽選結果</div>
+        <h3 class="question-title">この練習問題の結果</h3>
+        ${renderFeedbackPaymentSummary(feedback)}
+        ${renderFeedbackTaskDetails(task, record, feedback)}
+        <p class="practice-feedback-note">練習問題の結果は保存されず、最終的な報酬にも含まれません。</p>
+        <div class="feedback-actions">
+          <button class="btn-primary" id="continueAfterPracticeFeedback" type="button">練習を終了</button>
+        </div>
+      </section>
+    </main>
+  `;
+  document.getElementById("continueAfterPracticeFeedback").addEventListener("click", finishPracticeFeedback);
+}
+
 function resetPractice() {
   state.phase = "practice";
   state.runtime = null;
   state.taskTimedOut = false;
   state.memoryChallenge = null;
+  state.practiceFeedback = null;
   state.taskStartedAt = Date.now();
   state.error = "";
+  saveState();
   render();
+}
+
+function finishPracticeFeedback() {
+  state.phase = "practiceSummary";
+  state.runtime = null;
+  state.taskTimedOut = false;
+  state.memoryChallenge = null;
+  state.practiceFeedback = null;
+  state.taskStartedAt = Date.now();
+  state.error = "";
+  saveState();
+  render();
+  scrollToTopAfterRender();
 }
 
 function startFormalTasks() {
   state.taskIndex = 0;
+  state.practiceFeedback = null;
   state.error = "";
   startCurrentTaskFlow();
 }
@@ -843,13 +905,16 @@ function currentPracticeTask() {
   });
 }
 
-function completePractice() {
-  state.phase = "practiceSummary";
+function completePractice(task, payload) {
+  const feedback = task && payload ? buildTaskFeedback(task, payload) : null;
+  state.practiceFeedback = feedback ? { payload, feedback } : null;
+  state.phase = feedback ? "practiceFeedback" : "practiceSummary";
   state.runtime = null;
   state.taskTimedOut = false;
   state.memoryChallenge = null;
   state.taskStartedAt = Date.now();
   state.error = "";
+  saveState();
   render();
   scrollToTopAfterRender();
 }
@@ -1181,6 +1246,7 @@ function renderTask() {
 
 function renderFeedback() {
   const block = currentBlock();
+  const task = currentTask();
   const record = currentFeedbackRecord();
   const feedback = record?.payload?.feedback;
   if (!feedback) {
@@ -1201,20 +1267,9 @@ function renderFeedback() {
       <section class="feedback-card">
         <div class="step-label">抽選結果</div>
         <h3 class="question-title">この課題の結果</h3>
-        <details class="feedback-details">
-          <summary class="feedback-summary">
-            <span class="feedback-summary-label">
-              <span>獲得金額</span>
-              ${feedback.summary_note ? `<small>${escapeHtml(feedback.summary_note)}</small>` : ""}
-            </span>
-            <strong class="feedback-total ${feedback.penalty_applied ? "zero" : ""}">${escapeHtml(formatYen(feedback.total_amount))}</strong>
-            <span class="feedback-toggle">詳細</span>
-          </summary>
-          ${renderFeedbackPenaltyReasons(feedback)}
-          <div class="feedback-detail-list">
-            ${renderFeedbackItems(feedback.items)}
-          </div>
-        </details>
+        ${renderFeedbackPaymentSummary(feedback)}
+        ${renderFeedbackPenaltyReasons(feedback)}
+        ${renderFeedbackTaskDetails(task, record, feedback)}
         <div class="feedback-actions">
           <button class="btn-primary" id="continueAfterFeedback" type="button">次へ進む</button>
         </div>
@@ -1222,6 +1277,170 @@ function renderFeedback() {
     </main>
   `;
   document.getElementById("continueAfterFeedback").addEventListener("click", continueAfterFeedback);
+}
+
+function renderFeedbackPaymentSummary(feedback) {
+  return `
+    <div class="feedback-payment-summary">
+      <span class="feedback-summary-label">
+        <span>獲得金額</span>
+        ${feedback.summary_note ? `<small>${escapeHtml(feedback.summary_note)}</small>` : ""}
+      </span>
+      <strong class="feedback-total ${feedback.penalty_applied ? "zero" : ""}">${escapeHtml(formatYen(feedback.total_amount))}</strong>
+    </div>
+  `;
+}
+
+function renderFeedbackTaskDetails(task, record, feedback) {
+  if (task.type === "mpl") return renderMplFeedbackTable(task, record?.payload, feedback);
+  if (task.type === "bisection" || task.type === "probabilityBisection") {
+    return renderBisectionFeedbackList(task, record?.payload, feedback);
+  }
+  return `
+    <details class="feedback-details" open>
+      <summary class="feedback-summary">
+        <span class="feedback-summary-label">抽選の詳細</span>
+        <span class="feedback-toggle">詳細</span>
+      </summary>
+      <div class="feedback-detail-list">
+        ${renderFeedbackItems(feedback.items)}
+      </div>
+    </details>
+  `;
+}
+
+function renderMplFeedbackTable(task, payload, feedback) {
+  const itemsByRow = new Map((feedback.items || []).map((item) => [Number(item.item_index), item]));
+  const compact = task.rows.length >= 18;
+  return `
+    <section class="feedback-task-details feedback-mpl-details">
+      <p class="feedback-task-intro">色が付いている選択肢が、あなたが選んだ選択肢です。右端に各行の抽選結果を表示しています。</p>
+      <div class="table feedback-mpl-table ${compact ? "compact-table" : ""}">
+        <div class="table-row table-head">
+          <div></div>
+          <div>行</div>
+          <div><span>選択肢A</span><span class="table-head-subtitle">くじ</span></div>
+          <div><span>選択肢B</span><span class="table-head-subtitle">確実金額</span></div>
+          <div>獲得金額</div>
+        </div>
+        ${task.rows.map((row) => {
+          const item = itemsByRow.get(row.row);
+          const choice = payload?.choices?.[row.row] || (item?.selected_label === "選択肢A" ? "A" : "B");
+          const rewardSourceClass = choice === "B" ? "feedback-reward-from-b" : "feedback-reward-from-a";
+          return `
+            <div class="table-row feedback-mpl-row ${item?.selected_for_payment ? "selected-for-payment" : ""}">
+              <div class="feedback-payment-marker">${item?.selected_for_payment ? '<span class="feedback-selected-row-label">抽選された行</span>' : ""}</div>
+              <div class="feedback-mpl-row-index">${row.row}</div>
+              <div class="table-option-cell feedback-table-option choice-a ${choice === "A" ? "selected" : ""}">
+                <span class="mobile-cell-label">選択肢A くじ</span>
+                <span>${renderMplFeedbackLottery(row.optionA, choice, item)}</span>
+              </div>
+              <div class="table-option-cell feedback-table-option choice-b ${choice === "B" ? "selected" : ""}">
+                <span class="mobile-cell-label">選択肢B 確実金額</span>
+                <span class="feedback-certain-amount">${escapeHtml(simplifyCertainDisplay(row.optionB))}</span>
+              </div>
+              ${renderFeedbackReward(item, `feedback-table-result ${rewardSourceClass}`, { showSelectedBadge: false })}
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMplFeedbackLottery(optionA, choice, item) {
+  const display = simplifyLotteryDisplay(optionA);
+  const rendered = renderTextWithFractions(display);
+  if (choice !== "A" || !Number.isFinite(Number(item?.reward_amount))) return rendered;
+
+  const amount = formatYen(item.reward_amount);
+  const probability = formatOutcomeProbability(item.outcome_probability);
+  const winningOutcome = `${probability}で ${amount}`;
+  const outcomes = display.split("、").map((outcome) => outcome.trim());
+  const winningIndex = outcomes.findIndex((outcome) => outcome.includes(winningOutcome));
+  const amountIndex = outcomes.findIndex((outcome) => outcome.includes(amount));
+  const outcomeIndex = winningIndex >= 0 ? winningIndex : amountIndex;
+
+  if (outcomeIndex >= 0) {
+    return outcomes.map((outcome, index) => {
+      const className = index === outcomeIndex ? "feedback-lottery-outcome" : "feedback-lottery-missed-outcome";
+      const separator = index < outcomes.length - 1 ? "、" : "";
+      return `<span class="${className}">${renderTextWithFractions(outcome)}${separator}</span>`;
+    }).join("");
+  }
+
+  return rendered.replace(escapeHtml(amount), `<span class="feedback-lottery-outcome">${escapeHtml(amount)}</span>`);
+}
+
+function renderBisectionFeedbackList(task, payload, feedback) {
+  const history = Array.isArray(payload?.history) ? payload.history : [];
+  if (!history.length) {
+    return `
+      <details class="feedback-details" open>
+        <summary class="feedback-summary">
+          <span class="feedback-summary-label">抽選の詳細</span>
+          <span class="feedback-toggle">詳細</span>
+        </summary>
+        <div class="feedback-detail-list">${renderFeedbackItems(feedback.items)}</div>
+      </details>
+    `;
+  }
+  const itemsByRound = new Map((feedback.items || []).map((item) => [Number(item.item_index), item]));
+  return `
+    <section class="feedback-task-details feedback-bisection-details">
+      <p class="feedback-task-intro">色が付いている選択肢が、あなたが選んだ選択肢です。各比較の右側に最終的な獲得金額を表示しています。</p>
+      <div class="feedback-bisection-list">
+        <div class="feedback-bisection-header" aria-hidden="true">
+          <span></span>
+          <strong>獲得金額</strong>
+        </div>
+        ${history.map((entry) => renderBisectionFeedbackEntry(task, payload, entry, itemsByRound.get(Number(entry.round)))).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderBisectionFeedbackEntry(task, payload, entry, item) {
+  const choice = entry.choice === "A" ? "A" : "B";
+  const isProbability = task.type === "probabilityBisection";
+  const optionA = isProbability
+    ? `${escapeHtml(formatYen(entry.sure_amount ?? payload.sure_amount))} を確実に受け取る`
+    : renderTextWithFractions(task.optionA);
+  const optionB = isProbability
+    ? `${escapeHtml(formatProbability(entry.candidate))} の確率で ${escapeHtml(formatYen(entry.high_amount ?? payload.high_amount))}、それ以外は ${escapeHtml(formatYen(entry.baseline_amount ?? payload.baseline_amount))}`
+    : `${renderTextWithFractions(task.optionBPrefix)} ${escapeHtml(formatAmount(entry.candidate, task.unit))}${task.optionBSuffix ? `、${renderTextWithFractions(task.optionBSuffix)}` : ""}`;
+  const stepLabel = isProbability ? "確率比較" : "比較";
+  return `
+    <article class="feedback-bisection-entry ${item?.selected_for_payment ? "selected-for-payment" : ""}">
+      <div class="feedback-bisection-step">${stepLabel} ${escapeHtml(entry.round)}</div>
+      <div class="feedback-bisection-row">
+        <div class="feedback-bisection-options">
+          <div class="lottery-box lottery-a feedback-lottery-box ${choice === "A" ? "selected" : ""}">
+            <div class="lottery-label">選択肢A</div>
+            <div class="lottery-detail">${optionA}</div>
+          </div>
+          <div class="vs-label">vs</div>
+          <div class="lottery-box lottery-b feedback-lottery-box ${choice === "B" ? "selected" : ""}">
+            <div class="lottery-label">選択肢B</div>
+            <div class="lottery-detail">${optionB}</div>
+          </div>
+        </div>
+        ${renderFeedbackReward(item, "feedback-bisection-result")}
+      </div>
+    </article>
+  `;
+}
+
+function renderFeedbackReward(item, className, options = {}) {
+  const amount = Number(item?.reward_amount);
+  const renderedAmount = Number.isFinite(amount) ? formatYen(amount) : "—";
+  const showSelectedBadge = options.showSelectedBadge !== false;
+  return `
+    <div class="${className}">
+      <strong>${escapeHtml(renderedAmount)}</strong>
+      ${showSelectedBadge && item?.selected_for_payment ? `<span class="feedback-selected-badge">${escapeHtml(item.selected_payment_badge || "抽選された行")}</span>` : ""}
+    </div>
+  `;
 }
 
 function renderFeedbackPenaltyReasons(feedback) {
@@ -1238,19 +1457,24 @@ function renderFeedbackItems(items = []) {
   if (!items.length) {
     return `<p class="muted">この課題の抽選明細はありません。</p>`;
   }
-  return items.map((item) => `
+  return `
+    <div class="feedback-item-header">
+      <span></span>
+      <strong>獲得金額</strong>
+    </div>
+    ${items.map((item) => `
     <div class="feedback-item ${item.selected_for_payment ? "selected-for-payment" : ""}">
       <div class="feedback-item-main">
         <strong>${escapeHtml(item.label)}</strong>
         <span>${escapeHtml(item.selected_label)}: ${escapeHtml(item.selected_option)}</span>
       </div>
       <div class="feedback-item-result">
-        <span>${escapeHtml(item.outcome_label)}</span>
         <strong>${escapeHtml(formatYen(item.reward_amount))}</strong>
         ${item.selected_for_payment ? `<span class="feedback-selected-badge">${escapeHtml(item.selected_payment_badge || "抽選された行")}</span>` : ""}
       </div>
     </div>
-  `).join("");
+  `).join("")}
+  `;
 }
 
 function currentFeedbackRecord() {
@@ -1618,7 +1842,17 @@ function submitCeMenu(block, task, options = {}) {
     return;
   }
   if (options.practice) {
-    completePractice();
+    completePractice(task, {
+      response_type: "ce_menu",
+      ce_estimate: summary.estimate,
+      switch_lower: summary.lower,
+      switch_upper: summary.upper,
+      switch_status: summary.status,
+      switch_row: summary.switch_row,
+      switch_direction: task.switchDirection ?? SWITCH_B_TO_A,
+      monotonic: summary.monotonic,
+      choices: runtime.choices,
+    });
     return;
   }
   recordTask(block, task, {
@@ -1679,7 +1913,13 @@ function submitBisection(block, task, options = {}) {
   if (runtime.round >= task.rounds) {
     const estimate = midpoint(runtime.low, runtime.high);
     if (options.practice) {
-      completePractice();
+      completePractice(task, {
+        response_type: "bisection",
+        estimate,
+        final_low: runtime.low,
+        final_high: runtime.high,
+        history: runtime.history,
+      });
       return;
     }
     recordTask(block, task, {
@@ -1707,7 +1947,11 @@ function submitInputMatch(block, task, options = {}) {
     return;
   }
   if (options.practice) {
-    completePractice();
+    completePractice(task, {
+      response_type: "outcome_matching",
+      unknown: task.unknown,
+      value,
+    });
     return;
   }
   recordTask(block, task, {
@@ -1738,7 +1982,18 @@ function submitProbabilityMatch(block, task, options = {}) {
     return;
   }
   if (options.practice) {
-    completePractice();
+    completePractice(task, {
+      response_type: "probability_matching",
+      unknown: task.unknown,
+      value: percent / 100,
+      entered_percent: percent,
+      sure_symbol: task.sureSymbol,
+      high_symbol: task.highSymbol,
+      sure_amount: amounts.sure,
+      high_amount: amounts.high,
+      baseline_amount: task.baselineAmount,
+      nominal_weight_target: task.nominalWeightTarget,
+    });
     return;
   }
   recordTask(block, task, {
@@ -1796,7 +2051,19 @@ function submitProbabilityBisection(block, task, options = {}) {
   if (runtime.round >= task.rounds) {
     const estimate = midpointProbability(runtime.low, runtime.high);
     if (options.practice) {
-      completePractice();
+      completePractice(task, {
+        response_type: "probability_bisection",
+        estimate,
+        final_low: runtime.low,
+        final_high: runtime.high,
+        sure_task_id: task.sureTaskId,
+        high_task_id: task.highTaskId,
+        sure_amount: amounts.sure,
+        high_amount: amounts.high,
+        baseline_amount: task.baselineAmount,
+        nominal_weight_target: task.nominalWeightTarget,
+        history: runtime.history,
+      });
       return;
     }
     recordTask(block, task, {
@@ -1834,7 +2101,17 @@ function submitMpl(block, task, options = {}) {
     return;
   }
   if (options.practice) {
-    completePractice();
+    completePractice(task, {
+      response_type: "mpl",
+      ce_estimate: summary.estimate,
+      switch_lower: summary.lower,
+      switch_upper: summary.upper,
+      switch_status: summary.status,
+      switch_row: summary.switch_row,
+      switch_direction: task.switchDirection ?? SWITCH_B_TO_A,
+      monotonic: summary.monotonic,
+      choices: state.runtime.choices,
+    });
     return;
   }
   recordTask(block, task, {
@@ -2483,7 +2760,12 @@ function renderFinish() {
     state.csvDownloaded = true;
     saveState();
     if (!EMBEDDED_MODE) {
-      downloadCsv(csvFilename(), state.records);
+      void downloadCsv(csvFilename(), state.records).catch(() => {
+        state.csvDownloaded = false;
+        state.error = "匿名化済み CSV の作成に失敗しました。もう一度お試しください。";
+        saveState();
+        render();
+      });
     }
   }
 }
@@ -2608,9 +2890,17 @@ function csvFilename() {
   return `pwf-results${participant}.csv`;
 }
 
-function downloadCsv(filename, data) {
+async function sha256Hex(value) {
+  const encoded = new TextEncoder().encode(String(value ?? "").trim());
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function downloadCsv(filename, data) {
+  const studentIdHash = await sha256Hex(state.participant);
   const columns = [
     "participant",
+    "student_id_hash",
     "assignment_group",
     "assignment_modulus",
     "student_id_last3",
@@ -2663,6 +2953,7 @@ function downloadCsv(filename, data) {
   ];
   const rows = data.map((record) => ({
     participant: record.participant,
+    student_id_hash: studentIdHash,
     assignment_group: record.assignment_group,
     assignment_modulus: record.assignment_modulus,
     student_id_last3: record.student_id_last3,

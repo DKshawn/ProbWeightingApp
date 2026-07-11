@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Optional
 
 
@@ -44,6 +44,8 @@ class CiResult(BaseModel):
     ci_satisfied: bool
     response_time_ms: Optional[int] = None
     timed_out: bool = False
+    payment_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    trial_payment_total: float = 0
 
     @field_validator("experiment_mode")
     @classmethod
@@ -94,8 +96,17 @@ class CiResult(BaseModel):
             raise ValueError("response_time_ms must be 0 or greater")
         return v
 
+    @field_validator("trial_payment_total")
+    @classmethod
+    def validate_trial_payment_total(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("trial_payment_total must be 0 or greater")
+        return v
+
     @model_validator(mode="after")
     def validate_indifference_directions(self):
+        if self.s < 0.01:
+            raise ValueError("Step 2 probability s must be at least 0.01 (1%)")
         if abs(self.r - self.p) < 1e-12:
             raise ValueError("CI trial invalid: r must differ from p")
         if abs(self.r - self.q) < 1e-12:

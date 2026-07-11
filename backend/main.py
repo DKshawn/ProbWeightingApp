@@ -16,10 +16,12 @@ try:
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        create_ci_settlement,
         find_completed_submission,
         get_resume_session,
         get_session,
         get_ci_results_by_session,
+        get_ci_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
         get_utility_results_by_student,
@@ -42,10 +44,12 @@ except ImportError:
         StorageError,
         StorageNotConfiguredError,
         create_session,
+        create_ci_settlement,
         find_completed_submission,
         get_resume_session,
         get_session,
         get_ci_results_by_session,
+        get_ci_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
         get_utility_results_by_student,
@@ -148,6 +152,7 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
     session_id = session["session_id"]
     try:
         saved_ci_results = get_ci_results_by_session(session_id)
+        ci_settlement = get_ci_settlement(session_id)
         saved_pwf_results = get_pwf_results_by_session(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
@@ -166,6 +171,7 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
         "resumed": resumed,
         "pwf_completed": pwf_completed,
         "saved_ci_results": saved_ci_results,
+        "ci_settlement": ci_settlement,
         "saved_pwf_results": saved_pwf_results,
     }
 
@@ -220,6 +226,25 @@ def save_ci_result(result: CiResult):
         _raise_storage_http_error(exc)
 
     return {"status": "ok", "session_completed": session_completed}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/session/{session_id}/ci-settlement
+# ---------------------------------------------------------------------------
+@app.post("/api/session/{session_id}/ci-settlement")
+def settle_ci_payment(session_id: str):
+    try:
+        existing = get_ci_settlement(session_id)
+        if existing:
+            return {"status": "ok", "settlement": existing, "session_completed": True}
+
+        _session_can_accept_writes(session_id)
+        settlement = create_ci_settlement(session_id)
+        session_completed = mark_session_completed_if_ready(session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "settlement": settlement, "session_completed": session_completed}
 
 
 # ---------------------------------------------------------------------------
@@ -282,17 +307,28 @@ def save_pwf_results(batch: PwfBatch):
 # GET /api/ci-results/{student_id}/csv
 # ---------------------------------------------------------------------------
 CI_CSV_COLUMNS = [
-    "StudentID", "Name", "Trial", "Block", "N",
+    "StudentID", "StudentIDHash", "Name", "Trial", "Block", "N",
     "study_mode", "experiment_mode", "time_pressure_seconds",
     "student_id_last_digit", "amount_level", "amount_multiplier",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
-    "choice", "ci_satisfied", "response_time_ms", "timed_out", "Timestamp",
+    "choice", "ci_satisfied", "response_time_ms", "timed_out",
+    "step1_selected_option", "step1_selection_method", "step1_probability",
+    "step1_option_amount", "step1_random_draw", "step1_reward_amount",
+    "step2_selected_option", "step2_selection_method", "step2_probability",
+    "step2_option_amount", "step2_random_draw", "step2_reward_amount",
+    "step3_selected_option", "step3_selection_method", "step3_probability",
+    "step3_option_amount", "step3_random_draw", "step3_reward_amount",
+    "step4_selected_option", "step4_selection_method", "step4_probability",
+    "step4_option_amount", "step4_random_draw", "step4_reward_amount",
+    "ci_trial_payment_total", "ci_final_payment_selected", "ci_final_selected_trial",
+    "ci_final_payment_total", "ci_final_payment_rule", "ci_final_settled_at", "Timestamp",
 ]
 
 CI_FIELD_MAP = {
     "StudentID": "student_id",
+    "StudentIDHash": "student_id_hash",
     "Name": "name",
     "study_mode": "study_mode",
     "Trial": "trial",
@@ -319,11 +355,17 @@ CI_FIELD_MAP = {
     "ci_satisfied": "ci_satisfied",
     "response_time_ms": "response_time_ms",
     "timed_out": "timed_out",
+    "ci_trial_payment_total": "trial_payment_total",
+    "ci_final_payment_selected": "ci_final_payment_selected",
+    "ci_final_selected_trial": "ci_final_selected_trial",
+    "ci_final_payment_total": "ci_final_payment_total",
+    "ci_final_payment_rule": "ci_final_payment_rule",
+    "ci_final_settled_at": "ci_final_settled_at",
     "Timestamp": "Timestamp",
 }
 
 UTILITY_CSV_COLUMNS = [
-    "StudentID", "Name", "utility_trial", "sequence", "row",
+    "StudentID", "StudentIDHash", "Name", "utility_trial", "sequence", "row",
     "study_mode", "experiment_mode", "time_pressure_seconds",
     "p", "r_amount", "R_amount", "x_prev", "x_candidate", "increment",
     "choice", "x_estimate", "switch_lower", "switch_upper", "switch_status",
@@ -332,6 +374,7 @@ UTILITY_CSV_COLUMNS = [
 
 UTILITY_FIELD_MAP = {
     "StudentID": "student_id",
+    "StudentIDHash": "student_id_hash",
     "Name": "name",
     "study_mode": "study_mode",
     "utility_trial": "utility_trial",
@@ -356,7 +399,7 @@ UTILITY_FIELD_MAP = {
 }
 
 PWF_CSV_COLUMNS = [
-    "session_id", "StudentID", "Name", "study_mode", "pwf_trial",
+    "session_id", "StudentID", "StudentIDHash", "Name", "study_mode", "pwf_trial",
     "participant", "assignment_group", "assignment_modulus", "student_id_last3",
     "student_id_last_digit", "amount_level", "amount_multiplier", "assigned_block_id",
     "block_id", "block_title", "task_id", "task_category", "is_anchor", "task_index",
@@ -378,6 +421,7 @@ PWF_CSV_COLUMNS = [
 PWF_FIELD_MAP = {
     "session_id": "session_id",
     "StudentID": "student_id",
+    "StudentIDHash": "student_id_hash",
     "Name": "name",
     "study_mode": "study_mode",
     "pwf_trial": "pwf_trial",
@@ -454,7 +498,19 @@ def download_ci_csv(student_id: str):
     writer = csv.DictWriter(output, fieldnames=CI_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for r in student_results:
-        row = {col: r.get(CI_FIELD_MAP[col], "") for col in CI_CSV_COLUMNS}
+        row = {col: r.get(CI_FIELD_MAP.get(col, ""), "") for col in CI_CSV_COLUMNS}
+        payment_details = r.get("payment_details") if isinstance(r.get("payment_details"), dict) else {}
+        for step in range(1, 5):
+            detail = payment_details.get(f"step{step}") if isinstance(payment_details, dict) else {}
+            detail = detail if isinstance(detail, dict) else {}
+            row.update({
+                f"step{step}_selected_option": detail.get("selected_option", ""),
+                f"step{step}_selection_method": detail.get("selection_method", ""),
+                f"step{step}_probability": detail.get("probability", ""),
+                f"step{step}_option_amount": detail.get("option_amount", ""),
+                f"step{step}_random_draw": detail.get("random_draw", ""),
+                f"step{step}_reward_amount": detail.get("reward_amount", ""),
+            })
         writer.writerow(row)
 
     output.seek(0)

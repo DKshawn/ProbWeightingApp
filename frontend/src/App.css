@@ -305,6 +305,93 @@ body {
 
 .saving { color: #888; font-size: 0.9rem; }
 
+/* ===== CI Step 1-3 feedback ===== */
+.ci-feedback-card {
+  padding: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.ci-feedback-card h2 {
+  font-size: 1.1rem;
+}
+
+.ci-feedback-card > p {
+  color: #64748b;
+  line-height: 1.55;
+}
+
+.ci-option-list {
+  display: grid;
+  gap: 10px;
+}
+
+.ci-option-list p {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ci-option-label {
+  flex: 0 0 auto;
+  min-width: 70px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1e3a8a;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ci-feedback-options {
+  display: grid;
+  gap: 12px;
+}
+
+.ci-feedback-options .lottery-box.muted {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.ci-feedback-options .lottery-box.selected {
+  border-color: #22c55e;
+  background: #f0fdf4;
+  box-shadow: inset 4px 0 0 #22c55e;
+}
+
+.ci-feedback-selected {
+  align-self: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.ci-feedback-reward {
+  padding: 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #1e3a8a;
+  font-weight: 800;
+}
+
+.ci-feedback-reward strong {
+  color: #0f172a;
+  font-size: 1.35rem;
+}
+
 /* ===== Block break / Finish ===== */
 .break-screen, .finish-screen {
   justify-content: center;
@@ -463,6 +550,42 @@ body {
 
 .settlement-empty {
   color: #64748b;
+}
+
+.ci-settlement-content {
+  max-width: 580px;
+}
+
+.ci-settlement-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.ci-settlement-step {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+  border: 1px solid #e5edf6;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #475569;
+}
+
+.ci-settlement-step > strong {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.ci-settlement-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ci-settlement-error .error {
+  margin: 0;
 }
 
 /* ===== Utility elicitation ===== */

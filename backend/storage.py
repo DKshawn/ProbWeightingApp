@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import random
@@ -23,6 +24,7 @@ _RETRYABLE_DB_ERRORS = (
 )
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_ci_results: list[dict[str, Any]] = []
+_memory_ci_settlements: dict[str, dict[str, Any]] = {}
 _memory_utility_results: list[dict[str, Any]] = []
 _memory_pwf_results: list[dict[str, Any]] = []
 
@@ -37,6 +39,12 @@ class StorageNotConfiguredError(StorageError):
 
 class DuplicateSubmissionError(StorageError):
     pass
+
+
+def hash_student_id(student_id: str) -> str:
+    """Return the stable SHA-256 anonymized identifier for a student ID."""
+    normalized_id = str(student_id).strip()
+    return hashlib.sha256(normalized_id.encode("utf-8")).hexdigest()
 
 
 def storage_mode() -> str:
@@ -63,26 +71,32 @@ def _connect():
 def _database_schema_ready(cur) -> bool:
     required_columns = {
         "experiment_sessions": {
-            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trials", "status", "pwf_completed",
             "pwf_completed_at", "completed_at", "last_seen_at", "created_at",
         },
         "ci_results": {
-            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trial", "block", "n", "student_id_last_digit",
             "amount_level", "amount_multiplier", "p", "q", "r", "x", "x_prime",
             "y", "s", "y_prime", "pn", "qn", "rn", "sn", "choice",
-            "ci_satisfied", "response_time_ms", "timed_out", "timestamp",
+            "ci_satisfied", "response_time_ms", "timed_out", "payment_details",
+            "trial_payment_total", "timestamp",
+        },
+        "ci_settlements": {
+            "session_id", "student_id", "student_id_hash", "name", "study_mode",
+            "selected_trial", "selected_trial_amount", "payment_rule",
+            "selected_trial_payments", "settled_at",
         },
         "utility_results": {
-            "session_id", "student_id", "name", "study_mode", "experiment_mode",
+            "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
             "time_pressure_seconds", "utility_trial", "sequence", "row", "p",
             "r_amount", "capital_r_amount", "x_prev", "x_candidate",
             "increment", "choice", "x_estimate", "switch_lower", "switch_upper",
             "switch_status", "response_time_ms", "timed_out", "timestamp",
         },
         "pwf_results": {
-            "session_id", "student_id", "name", "study_mode", "pwf_trial",
+            "session_id", "student_id", "student_id_hash", "name", "study_mode", "pwf_trial",
             "participant", "assignment_group", "assignment_modulus",
             "student_id_last3", "student_id_last_digit", "amount_level",
             "amount_multiplier", "assigned_block_id", "block_id", "block_title",
@@ -113,6 +127,27 @@ def _database_schema_ready(cur) -> bool:
         required.issubset(actual_columns.get(table, set()))
         for table, required in required_columns.items()
     )
+
+
+def _backfill_student_id_hashes(cur) -> None:
+    """Populate the new anonymized identifier for rows saved before this column existed."""
+    table_keys = (
+        ("experiment_sessions", "session_id"),
+        ("ci_results", "id"),
+        ("utility_results", "id"),
+        ("pwf_results", "id"),
+    )
+    for table_name, key_column in table_keys:
+        cur.execute(
+            f"SELECT {key_column}, student_id FROM {table_name} WHERE student_id_hash IS NULL"
+        )
+        rows = cur.fetchall()
+        if not rows:
+            continue
+        cur.executemany(
+            f"UPDATE {table_name} SET student_id_hash = %s WHERE {key_column} = %s",
+            [(hash_student_id(row["student_id"]), row[key_column]) for row in rows],
+        )
 
 
 def _with_retry(operation, *, attempts: int = 3):
@@ -149,6 +184,7 @@ def ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS experiment_sessions (
                     session_id UUID PRIMARY KEY,
                     student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
@@ -166,6 +202,7 @@ def ensure_schema() -> None:
                     id BIGSERIAL PRIMARY KEY,
                     session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
@@ -192,14 +229,30 @@ def ensure_schema() -> None:
                     ci_satisfied BOOLEAN NOT NULL,
                     response_time_ms INTEGER,
                     timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+                    payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    trial_payment_total DOUBLE PRECISION NOT NULL DEFAULT 0,
                     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (session_id, trial)
+                );
+
+                CREATE TABLE IF NOT EXISTS ci_settlements (
+                    session_id UUID PRIMARY KEY REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
+                    student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
+                    selected_trial INTEGER NOT NULL,
+                    selected_trial_amount DOUBLE PRECISION NOT NULL,
+                    payment_rule TEXT NOT NULL,
+                    selected_trial_payments JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    settled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
                 CREATE TABLE IF NOT EXISTS utility_results (
                     id BIGSERIAL PRIMARY KEY,
                     session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
@@ -230,6 +283,7 @@ def ensure_schema() -> None:
                     id BIGSERIAL PRIMARY KEY,
                     session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     pwf_trial INTEGER NOT NULL,
@@ -279,6 +333,7 @@ def ensure_schema() -> None:
                 );
 
                 ALTER TABLE experiment_sessions
+                    ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -296,6 +351,7 @@ def ensure_schema() -> None:
                     CHECK (status IN ('started', 'in_progress', 'completed'));
 
                 ALTER TABLE ci_results
+                    ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -303,7 +359,9 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS amount_level TEXT NOT NULL DEFAULT 'low',
                     ADD COLUMN IF NOT EXISTS amount_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
                     ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
-                    ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE;
+                    ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    ADD COLUMN IF NOT EXISTS trial_payment_total DOUBLE PRECISION NOT NULL DEFAULT 0;
 
                 ALTER TABLE ci_results
                     DROP CONSTRAINT IF EXISTS ci_results_choice_check;
@@ -313,10 +371,12 @@ def ensure_schema() -> None:
                     CHECK (choice IN ('X', 'Indifferent', 'Y', 'Timeout'));
 
                 ALTER TABLE utility_results
+                    ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE;
 
                 ALTER TABLE pwf_results
+                    ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS student_id_last_digit TEXT,
                     ADD COLUMN IF NOT EXISTS amount_level TEXT,
                     ADD COLUMN IF NOT EXISTS amount_multiplier DOUBLE PRECISION,
@@ -349,14 +409,26 @@ def ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_ci_results_student_id
                     ON ci_results(student_id);
 
+                CREATE INDEX IF NOT EXISTS idx_ci_results_student_id_hash
+                    ON ci_results(student_id_hash);
+
                 CREATE INDEX IF NOT EXISTS idx_ci_results_summary
                     ON ci_results(block, n, trial);
 
                 CREATE INDEX IF NOT EXISTS idx_ci_results_experiment_mode
                     ON ci_results(experiment_mode);
 
+                CREATE INDEX IF NOT EXISTS idx_ci_settlements_student_id
+                    ON ci_settlements(student_id);
+
+                CREATE INDEX IF NOT EXISTS idx_ci_settlements_student_id_hash
+                    ON ci_settlements(student_id_hash);
+
                 CREATE INDEX IF NOT EXISTS idx_utility_results_student_id
                     ON utility_results(student_id);
+
+                CREATE INDEX IF NOT EXISTS idx_utility_results_student_id_hash
+                    ON utility_results(student_id_hash);
 
                 CREATE INDEX IF NOT EXISTS idx_utility_results_sequence
                     ON utility_results(sequence, row);
@@ -364,17 +436,24 @@ def ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_pwf_results_student_id
                     ON pwf_results(student_id);
 
+                CREATE INDEX IF NOT EXISTS idx_pwf_results_student_id_hash
+                    ON pwf_results(student_id_hash);
+
                 CREATE INDEX IF NOT EXISTS idx_pwf_results_block
                     ON pwf_results(block_id, task_index);
 
                 CREATE INDEX IF NOT EXISTS idx_experiment_sessions_resume
                     ON experiment_sessions(student_id, study_mode, status, last_seen_at DESC, created_at DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_experiment_sessions_student_id_hash
+                    ON experiment_sessions(student_id_hash);
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_sessions_one_completed_per_student_mode
                     ON experiment_sessions(student_id, study_mode)
                     WHERE status = 'completed';
                 """
             )
+            _backfill_student_id_hashes(cur)
         conn.commit()
     _schema_ready = True
 
@@ -388,10 +467,12 @@ def create_session(
     experiment_mode: str = "normal",
     time_pressure_seconds: int = 0,
 ) -> None:
+    student_id_hash = hash_student_id(student_id)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         _memory_sessions[session_id] = {
             "session_id": session_id,
             "student_id": student_id,
+            "student_id_hash": student_id_hash,
             "name": name,
             "study_mode": study_mode,
             "experiment_mode": experiment_mode,
@@ -412,11 +493,20 @@ def create_session(
             cur.execute(
                 """
                 INSERT INTO experiment_sessions (
-                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds, trials
+                    session_id, student_id, student_id_hash, name, study_mode, experiment_mode, time_pressure_seconds, trials
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds, Jsonb(trials)),
+                (
+                    session_id,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    study_mode,
+                    experiment_mode,
+                    time_pressure_seconds,
+                    Jsonb(trials),
+                ),
             )
         conn.commit()
 
@@ -461,6 +551,7 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     experiment_mode,
@@ -505,6 +596,7 @@ def find_completed_submission(student_id: str, study_mode: str) -> dict[str, Any
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     experiment_mode,
@@ -551,6 +643,7 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     experiment_mode,
@@ -666,6 +759,7 @@ def mark_pwf_completed(session_id: str) -> None:
 
 
 def save_ci_result(record: dict[str, Any]) -> None:
+    record = {**record, "student_id_hash": hash_student_id(record["student_id"])}
     timestamp = datetime.now(timezone.utc)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         memory_record = {**record, "Timestamp": timestamp.isoformat()}
@@ -690,25 +784,28 @@ def save_ci_result(record: dict[str, Any]) -> None:
             cur.execute(
                 """
                 INSERT INTO ci_results (
-                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
+                    session_id, student_id, student_id_hash, name, study_mode, experiment_mode, time_pressure_seconds,
                     trial, block, n, student_id_last_digit, amount_level, amount_multiplier,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
                     pn, qn, rn, sn,
-                    choice, ci_satisfied, response_time_ms, timed_out, timestamp
+                    choice, ci_satisfied, response_time_ms, timed_out,
+                    payment_details, trial_payment_total, timestamp
                 )
                 VALUES (
-                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s,
+                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s,
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(trial)s, %(block)s, %(N)s,
                     %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
                     %(p)s, %(q)s, %(r)s, %(x)s, %(x_prime)s,
                     %(y)s, %(s)s, %(y_prime)s,
                     %(pN)s, %(qN)s, %(rN)s, %(sN)s,
-                    %(choice)s, %(ci_satisfied)s, %(response_time_ms)s, %(timed_out)s, %(timestamp)s
+                    %(choice)s, %(ci_satisfied)s, %(response_time_ms)s, %(timed_out)s,
+                    %(payment_details)s, %(trial_payment_total)s, %(timestamp)s
                 )
                 ON CONFLICT (session_id, trial) DO UPDATE SET
                     student_id = EXCLUDED.student_id,
+                    student_id_hash = EXCLUDED.student_id_hash,
                     name = EXCLUDED.name,
                     study_mode = EXCLUDED.study_mode,
                     experiment_mode = EXCLUDED.experiment_mode,
@@ -734,15 +831,18 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     ci_satisfied = EXCLUDED.ci_satisfied,
                     response_time_ms = EXCLUDED.response_time_ms,
                     timed_out = EXCLUDED.timed_out,
+                    payment_details = EXCLUDED.payment_details,
+                    trial_payment_total = EXCLUDED.trial_payment_total,
                     timestamp = EXCLUDED.timestamp
                 """,
-                {**record, "timestamp": timestamp},
+                {**record, "payment_details": Jsonb(record.get("payment_details", {})), "timestamp": timestamp},
             )
         conn.commit()
     touch_session(record["session_id"], "in_progress")
 
 
 def save_utility_results(records: list[dict[str, Any]]) -> None:
+    records = [{**record, "student_id_hash": hash_student_id(record["student_id"])} for record in records]
     timestamp = datetime.now(timezone.utc)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         for record in records:
@@ -771,7 +871,7 @@ def save_utility_results(records: list[dict[str, Any]]) -> None:
             cur.executemany(
                 """
                 INSERT INTO utility_results (
-                    session_id, student_id, name, study_mode, experiment_mode, time_pressure_seconds,
+                    session_id, student_id, student_id_hash, name, study_mode, experiment_mode, time_pressure_seconds,
                     utility_trial, sequence, row,
                     p, r_amount, capital_r_amount,
                     x_prev, x_candidate, increment,
@@ -779,7 +879,7 @@ def save_utility_results(records: list[dict[str, Any]]) -> None:
                     response_time_ms, timed_out, timestamp
                 )
                 VALUES (
-                    %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s,
+                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s,
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(utility_trial)s, %(sequence)s, %(row)s,
                     %(p)s, %(r_amount)s, %(R_amount)s,
@@ -789,6 +889,7 @@ def save_utility_results(records: list[dict[str, Any]]) -> None:
                 )
                 ON CONFLICT (session_id, utility_trial) DO UPDATE SET
                     student_id = EXCLUDED.student_id,
+                    student_id_hash = EXCLUDED.student_id_hash,
                     name = EXCLUDED.name,
                     study_mode = EXCLUDED.study_mode,
                     experiment_mode = EXCLUDED.experiment_mode,
@@ -855,6 +956,7 @@ def _flatten_pwf_record(record: dict[str, Any], timestamp: datetime) -> dict[str
     return {
         "session_id": record["session_id"],
         "student_id": record["student_id"],
+        "student_id_hash": hash_student_id(record["student_id"]),
         "name": record["name"],
         "study_mode": record.get("study_mode", "full"),
         "pwf_trial": record["pwf_trial"],
@@ -940,7 +1042,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                 cur.executemany(
                     """
                     INSERT INTO pwf_results (
-                        session_id, student_id, name, study_mode, pwf_trial,
+                        session_id, student_id, student_id_hash, name, study_mode, pwf_trial,
                         participant, assignment_group, assignment_modulus, student_id_last3,
                         student_id_last_digit, amount_level, amount_multiplier,
                         assigned_block_id, block_id, block_title, task_id, is_anchor,
@@ -953,7 +1055,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                         response_time_ms, prompt, payload, source_timestamp, timestamp
                     )
                     VALUES (
-                        %(session_id)s, %(student_id)s, %(name)s, %(study_mode)s, %(pwf_trial)s,
+                        %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s, %(pwf_trial)s,
                         %(participant)s, %(assignment_group)s, %(assignment_modulus)s, %(student_id_last3)s,
                         %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
                         %(assigned_block_id)s, %(block_id)s, %(block_title)s, %(task_id)s, %(is_anchor)s,
@@ -967,6 +1069,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                     )
                     ON CONFLICT (session_id, pwf_trial) DO UPDATE SET
                         student_id = EXCLUDED.student_id,
+                        student_id_hash = EXCLUDED.student_id_hash,
                         name = EXCLUDED.name,
                         study_mode = EXCLUDED.study_mode,
                         participant = EXCLUDED.participant,
@@ -1029,6 +1132,47 @@ def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_ci_settlement(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    normalized = dict(row)
+    settled_at = normalized.get("settled_at")
+    if isinstance(settled_at, datetime):
+        normalized["settled_at"] = settled_at.isoformat()
+    normalized["session_id"] = str(normalized["session_id"])
+    return normalized
+
+
+def get_ci_settlement(session_id: str) -> dict[str, Any] | None:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        settlement = _memory_ci_settlements.get(session_id)
+        return _normalize_ci_settlement(settlement) if settlement else None
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    session_id::text,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    study_mode,
+                    selected_trial,
+                    selected_trial_amount,
+                    payment_rule,
+                    selected_trial_payments,
+                    settled_at
+                FROM ci_settlements
+                WHERE session_id = %s
+                """,
+                (session_id,),
+            )
+            row = cur.fetchone()
+    return _normalize_ci_settlement(row)
+
+
 def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         return [
@@ -1048,6 +1192,7 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     experiment_mode,
@@ -1074,6 +1219,8 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     ci_satisfied,
                     response_time_ms,
                     timed_out,
+                    payment_details,
+                    trial_payment_total,
                     timestamp AS "Timestamp"
                 FROM ci_results
                 WHERE session_id = %s
@@ -1104,6 +1251,7 @@ def get_pwf_results_by_session(session_id: str) -> list[dict[str, Any]]:
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     pwf_trial,
@@ -1169,6 +1317,97 @@ def _trial_count_from_session(session: dict[str, Any]) -> int:
     return len(trials) if isinstance(trials, list) else 0
 
 
+def create_ci_settlement(session_id: str) -> dict[str, Any]:
+    existing = get_ci_settlement(session_id)
+    if existing:
+        return existing
+
+    session = get_session(session_id)
+    if not session:
+        raise StorageError("CI session was not found")
+
+    expected_trials = _trial_count_from_session(session)
+    results = get_ci_results_by_session(session_id)
+    saved_trials = {int(row["trial"]) for row in results}
+    if expected_trials <= 0 or len(saved_trials) < expected_trials:
+        raise StorageError("CI results are not complete yet")
+
+    selected = random.choice(results)
+    settlement = {
+        "session_id": session_id,
+        "student_id": session["student_id"],
+        "student_id_hash": session["student_id_hash"],
+        "name": session["name"],
+        "study_mode": session["study_mode"],
+        "selected_trial": int(selected["trial"]),
+        "selected_trial_amount": float(selected.get("trial_payment_total") or 0),
+        "payment_rule": "random_ci_trial_sum_step_payments",
+        "selected_trial_payments": selected.get("payment_details") or {},
+        "settled_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        stored = _memory_ci_settlements.setdefault(session_id, settlement)
+        return _normalize_ci_settlement(stored) or settlement
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO ci_settlements (
+                    session_id, student_id, student_id_hash, name, study_mode,
+                    selected_trial, selected_trial_amount, payment_rule,
+                    selected_trial_payments, settled_at
+                )
+                VALUES (
+                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s,
+                    %(selected_trial)s, %(selected_trial_amount)s, %(payment_rule)s,
+                    %(selected_trial_payments)s, %(settled_at)s
+                )
+                ON CONFLICT (session_id) DO NOTHING
+                RETURNING
+                    session_id::text,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    study_mode,
+                    selected_trial,
+                    selected_trial_amount,
+                    payment_rule,
+                    selected_trial_payments,
+                    settled_at
+                """,
+                {**settlement, "selected_trial_payments": Jsonb(settlement["selected_trial_payments"])},
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    """
+                    SELECT
+                        session_id::text,
+                        student_id,
+                        student_id_hash,
+                        name,
+                        study_mode,
+                        selected_trial,
+                        selected_trial_amount,
+                        payment_rule,
+                        selected_trial_payments,
+                        settled_at
+                    FROM ci_settlements
+                    WHERE session_id = %s
+                    """,
+                    (session_id,),
+                )
+                row = cur.fetchone()
+        conn.commit()
+    normalized = _normalize_ci_settlement(row)
+    if normalized is None:
+        raise StorageError("CI final settlement could not be saved")
+    return normalized
+
+
 def mark_session_completed_if_ready(session_id: str) -> bool:
     session = get_session(session_id)
     if not session:
@@ -1180,6 +1419,8 @@ def mark_session_completed_if_ready(session_id: str) -> bool:
 
     saved_trials = {int(row["trial"]) for row in get_ci_results_by_session(session_id)}
     if len(saved_trials) < expected_trials:
+        return False
+    if not get_ci_settlement(session_id):
         return False
 
     timestamp = datetime.now(timezone.utc)
@@ -1218,14 +1459,25 @@ def mark_session_completed_if_ready(session_id: str) -> bool:
 
 def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
-        return [
-            r
-            for r in sorted(
-                _memory_ci_results,
-                key=lambda item: (item.get("Timestamp", ""), item.get("session_id", ""), item.get("trial", 0)),
-            )
-            if r.get("student_id") == student_id
-        ]
+        results = []
+        for record in sorted(
+            _memory_ci_results,
+            key=lambda item: (item.get("Timestamp", ""), item.get("session_id", ""), item.get("trial", 0)),
+        ):
+            if record.get("student_id") != student_id:
+                continue
+            settlement = _memory_ci_settlements.get(record["session_id"])
+            results.append({
+                **record,
+                "ci_final_payment_selected": bool(
+                    settlement and int(record["trial"]) == int(settlement["selected_trial"])
+                ),
+                "ci_final_selected_trial": settlement.get("selected_trial", "") if settlement else "",
+                "ci_final_payment_total": settlement.get("selected_trial_amount", "") if settlement else "",
+                "ci_final_payment_rule": settlement.get("payment_rule", "") if settlement else "",
+                "ci_final_settled_at": settlement.get("settled_at", "") if settlement else "",
+            })
+        return results
 
     ensure_schema()
     with _connect() as conn:
@@ -1233,37 +1485,46 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
             cur.execute(
                 """
                 SELECT
-                    student_id,
-                    name,
-                    study_mode,
-                    experiment_mode,
-                    time_pressure_seconds,
-                    trial,
-                    block,
-                    n AS "N",
-                    student_id_last_digit,
-                    amount_level,
-                    amount_multiplier,
-                    p,
-                    q,
-                    r,
-                    x,
-                    x_prime,
-                    y,
-                    s,
-                    y_prime,
-                    pn AS "pN",
-                    qn AS "qN",
-                    rn AS "rN",
-                    sn AS "sN",
-                    choice,
-                    ci_satisfied,
-                    response_time_ms,
-                    timed_out,
-                    timestamp AS "Timestamp"
-                FROM ci_results
-                WHERE student_id = %s
-                ORDER BY timestamp ASC, session_id ASC, trial ASC
+                    cr.student_id,
+                    cr.student_id_hash,
+                    cr.name,
+                    cr.study_mode,
+                    cr.experiment_mode,
+                    cr.time_pressure_seconds,
+                    cr.trial,
+                    cr.block,
+                    cr.n AS "N",
+                    cr.student_id_last_digit,
+                    cr.amount_level,
+                    cr.amount_multiplier,
+                    cr.p,
+                    cr.q,
+                    cr.r,
+                    cr.x,
+                    cr.x_prime,
+                    cr.y,
+                    cr.s,
+                    cr.y_prime,
+                    cr.pn AS "pN",
+                    cr.qn AS "qN",
+                    cr.rn AS "rN",
+                    cr.sn AS "sN",
+                    cr.choice,
+                    cr.ci_satisfied,
+                    cr.response_time_ms,
+                    cr.timed_out,
+                    cr.payment_details,
+                    cr.trial_payment_total,
+                    (cs.session_id IS NOT NULL AND cr.trial = cs.selected_trial) AS ci_final_payment_selected,
+                    cs.selected_trial AS ci_final_selected_trial,
+                    cs.selected_trial_amount AS ci_final_payment_total,
+                    cs.payment_rule AS ci_final_payment_rule,
+                    cs.settled_at AS ci_final_settled_at,
+                    cr.timestamp AS "Timestamp"
+                FROM ci_results AS cr
+                LEFT JOIN ci_settlements AS cs ON cs.session_id = cr.session_id
+                WHERE cr.student_id = %s
+                ORDER BY cr.timestamp ASC, cr.session_id ASC, cr.trial ASC
                 """,
                 (student_id,),
             )
@@ -1289,6 +1550,7 @@ def get_utility_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 """
                 SELECT
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     experiment_mode,
@@ -1339,6 +1601,7 @@ def get_pwf_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 SELECT
                     session_id::text,
                     student_id,
+                    student_id_hash,
                     name,
                     study_mode,
                     pwf_trial,

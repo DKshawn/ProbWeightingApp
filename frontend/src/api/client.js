@@ -53,6 +53,17 @@ export async function saveCiResult(data) {
   return res.json();
 }
 
+export async function createCiSettlement(sessionId) {
+  const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/ci-settlement`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(err, "CI 最終支払額の抽選に失敗しました"));
+  }
+  return res.json();
+}
+
 export async function completePwfSession(sessionId) {
   const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/pwf-complete`, {
     method: "POST",

@@ -1,6 +1,10 @@
 import { useState } from "react";
 import ProgressBar from "./ProgressBar";
 
+function formatPercentage(probability) {
+  return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
+}
+
 export default function Step1Screen({ trial, trialIndex, totalTrials, onNext }) {
   const [y, setY] = useState("");
   const [validationError, setValidationError] = useState("");
@@ -16,11 +20,11 @@ export default function Step1Screen({ trial, trialIndex, totalTrials, onNext }) 
       return;
     }
     if (p > q && val < x) {
-      setValidationError(`確率 ${q.toFixed(3)} は確率 ${p.toFixed(3)} より小さいため、?円は${x}円より小さくできません`);
+      setValidationError(`確率 ${formatPercentage(q)} は確率 ${formatPercentage(p)} より小さいため、?円は${x}円より小さくできません`);
       return;
     }
     if (p < q && val > x) {
-      setValidationError(`確率 ${q.toFixed(3)} は確率 ${p.toFixed(3)} より大きいため、?円は${x}円より大きくできません`);
+      setValidationError(`確率 ${formatPercentage(q)} は確率 ${formatPercentage(p)} より大きいため、?円は${x}円より大きくできません`);
       return;
     }
     setValidationError("");
@@ -34,12 +38,11 @@ export default function Step1Screen({ trial, trialIndex, totalTrials, onNext }) 
       <div className="step-label">Step 1</div>
 
       <div className="question-box">
-        <p>
-          <strong>（確率 {p.toFixed(3)} で {x}円）</strong> と無差別になる
-        </p>
-        <p>
-          <strong>（確率 {q.toFixed(3)} で <span className="unknown">?円</span>）</strong> を答えてください
-        </p>
+        <div className="ci-option-list">
+          <p><span className="ci-option-label">選択肢A</span><strong>（確率 {formatPercentage(p)} で {x}円）</strong></p>
+          <p><span className="ci-option-label">選択肢B</span><strong>（確率 {formatPercentage(q)} で <span className="unknown">?円</span>）</strong></p>
+        </div>
+        <p>上の2つが無差別になるように、選択肢Bの金額を答えてください。</p>
       </div>
 
       <form onSubmit={handleSubmit} className="input-form">

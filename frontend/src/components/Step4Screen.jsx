@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import ProgressBar from "./ProgressBar";
 
+function formatPercentage(probability) {
+  return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
+}
+
 export default function Step4Screen({
   trial,
   stepData,
@@ -11,8 +15,8 @@ export default function Step4Screen({
 }) {
   const { r, x_prime, N, block } = trial;
   const { s, y_prime } = stepData;
-  const rN = (r ** N).toFixed(3);
-  const sN = (s ** N).toFixed(3);
+  const rN = formatPercentage(r ** N);
+  const sN = formatPercentage(s ** N);
   const trialNum = trialIndex + 1;
   const [isFinished, setIsFinished] = useState(false);
   const startTimeRef = useRef(null);
@@ -50,7 +54,7 @@ export default function Step4Screen({
 
       <div className="lottery-compare">
         <div className="lottery-box lottery-x">
-          <div className="lottery-label">X</div>
+          <div className="lottery-label">選択肢A</div>
           <div className="lottery-detail">
             確率 <strong>{rN}</strong> で
           </div>
@@ -60,7 +64,7 @@ export default function Step4Screen({
         <div className="vs-label">vs</div>
 
         <div className="lottery-box lottery-y">
-          <div className="lottery-label">Y</div>
+          <div className="lottery-label">選択肢B</div>
           <div className="lottery-detail">
             確率 <strong>{sN}</strong> で
           </div>
@@ -74,7 +78,7 @@ export default function Step4Screen({
           onClick={(event) => submitChoice("X", event)}
           disabled={buttonsDisabled}
         >
-          Xを好む
+          Aを好む
         </button>
         <button
           className="btn-choice btn-indifferent"
@@ -88,7 +92,7 @@ export default function Step4Screen({
           onClick={(event) => submitChoice("Y", event)}
           disabled={buttonsDisabled}
         >
-          Yを好む
+          Bを好む
         </button>
       </div>
 

@@ -24,6 +24,9 @@ analysis_outputs/
 smoke_outputs/
 README.local-experiment.md
 
+# Downloaded Neon exports may contain student IDs. Keep them local only.
+neon_downloads/
+
 # OS
 .DS_Store
 Thumbs.db
