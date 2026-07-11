@@ -3,7 +3,7 @@ import Step1Screen from "./components/Step1Screen";
 import Step2Screen from "./components/Step2Screen";
 import Step3Screen from "./components/Step3Screen";
 import Step4Screen from "./components/Step4Screen";
-import StepFeedbackScreen from "./components/StepFeedbackScreen";
+import MirrorStep4Screen from "./components/MirrorStep4Screen";
 import CiSettlementScreen from "./components/CiSettlementScreen";
 import BlockBreakScreen from "./components/BlockBreakScreen";
 import PwfFrame from "./components/PwfFrame";
@@ -19,8 +19,9 @@ export default function App() {
     currentTrialIndex,
     currentStep,
     currentTrial,
+    currentMirrorOrderIndex,
+    currentMirrorRecord,
     stepData,
-    stepFeedback,
     ciSettlement,
     loading,
     error,
@@ -31,7 +32,7 @@ export default function App() {
     submitStep2,
     submitStep3,
     submitStep4,
-    continueStepFeedback,
+    submitMirrorStep4,
     startNextBlock,
     loadCiSettlement,
     continueToPwfSettlement,
@@ -88,17 +89,20 @@ export default function App() {
           totalTrials={totalTrials}
           onNext={submitStep4}
           loading={loading}
+          error={error}
         />
       );
-    case 8:
-      return (
-        <StepFeedbackScreen
-          trial={currentTrial}
-          trialIndex={currentTrialIndex}
-          totalTrials={totalTrials}
-          feedback={stepFeedback}
-          onNext={continueStepFeedback}
+    case 10:
+      return currentMirrorRecord ? (
+        <MirrorStep4Screen
+          key={`${currentMirrorOrderIndex}:${currentMirrorRecord.trial}`}
+          record={currentMirrorRecord}
+          onNext={submitMirrorStep4}
+          loading={loading}
+          error={error}
         />
+      ) : (
+        <div className="screen"><p className="saving">読み込み中...</p></div>
       );
     case 5:
       return <FinishScreen studentId={studentId} />;

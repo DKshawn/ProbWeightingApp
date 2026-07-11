@@ -9,7 +9,122 @@ const NUMBER_MEMORY_TASKS_PER_BLOCK = 1;
 const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
-const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks";
+// Bump this frozen design identifier whenever a protocol change should create a new CP assignment.
+const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks-cp-seeded-all-tasks-consent-gender";
+const CP_ASSIGNMENT_ALGORITHM = "fnv1a-mulberry32-v1";
+const CONSENT_VERSION = "2026-07-11-consent-form-v1";
+const GENDER_OPTIONS = ["male", "female"];
+const CONSENT_SECTIONS = [
+  {
+    heading: "研究課題名",
+    paragraphs: ["リスクおよび不確実性下における意思決定に関する研究"],
+  },
+  {
+    heading: "研究責任者",
+    paragraphs: [
+      "氏名：下川 哲矢",
+      "所属：経営学部 経営学研究科／東京理科大学",
+      "メールアドレス：simokawa@rs.tus.ac.jp",
+    ],
+  },
+  {
+    heading: "研究担当者・問い合わせ先",
+    paragraphs: [
+      "氏名：肖 煜秦",
+      "所属：経営学部 経営学研究科 下川研究室／東京理科大学",
+      "メールアドレス：8622701@ed.tus.ac.jp",
+    ],
+  },
+  {
+    heading: "研究の目的",
+    paragraphs: ["本研究は、リスクおよび不確実性のもとで、人がどのような意思決定を行うかを検討することを目的としています。"],
+  },
+  {
+    heading: "研究の方法および手続き",
+    paragraphs: [
+      "本研究への参加に同意された場合、一連の実験的な意思決定課題に取り組んでいただきます。",
+      "課題には、くじ、確率および金銭的報酬に関する選択課題、時間制限を伴う課題、記憶課題、ならびに簡単な質問票が含まれる場合があります。",
+      "本研究への参加に要する時間は、約60分を予定しています。",
+      "本研究への参加は、あなたの自由意思に基づくものです。参加しない場合、または参加途中で中止した場合でも、不利益を受けることはありません。",
+    ],
+  },
+  {
+    heading: "謝礼および追加報酬",
+    paragraphs: [
+      "本研究への参加謝礼として、1,000円をお支払いします。",
+      "また、実験課題におけるあなたの選択内容および課題の結果に応じて、最大1,000円の追加報酬をお支払いする場合があります。",
+    ],
+  },
+  {
+    heading: "予想されるリスクおよび不快感",
+    paragraphs: [
+      "本研究への参加に伴うリスクは、軽微なものであると考えられます。",
+      "意思決定課題に回答する際に、軽度の心理的負担、疲労、または時間的な圧迫感を覚える可能性があります。不快感や負担を感じた場合には、回答を中断し、研究への参加を中止することができます。",
+      "現時点において、本研究への参加に関連する既知の身体的リスクはありません。",
+    ],
+  },
+  {
+    heading: "期待される利益",
+    paragraphs: [
+      "上記の謝礼および追加報酬を除き、本研究への参加によって、あなたに直接的な利益が生じることが保証されるものではありません。",
+      "一方で、あなたの参加は、リスク、不確実性および曖昧性のもとでの意思決定に関する学術的知見の蓄積に貢献するものです。",
+    ],
+  },
+  {
+    heading: "収集するデータ",
+    paragraphs: [
+      "本研究では、実験課題におけるあなたの回答に関するデータを収集します。これには、選択内容、反応時間、課題の結果、実験条件、その他の関連する実験変数が含まれます。",
+      "また、研究目的に必要な範囲で、性別、学年等の基本属性情報や、認知課題の得点等を収集する場合があります。",
+      "氏名、学籍番号等、個人を直接識別できる情報は、分析または公表に用いる研究用データセットには含めません。",
+      "謝礼の支払いその他の事務手続きのために、個人を直接識別できる情報を収集する場合には、当該情報を研究データとは分離して保管し、研究成果の分析または公表に使用することはありません。",
+    ],
+  },
+  {
+    heading: "個人情報の保護および機密性",
+    paragraphs: [
+      "研究データは、分析、共有または公表に先立ち、氏名等の個人を直接識別できる情報を削除し、ランダムに割り当てた参加者IDに置き換えるなど、個人を直接識別できない形に加工します。",
+      "参加者IDと個人情報との対応表を作成する場合には、当該対応表を研究データとは分離し、厳重に管理します。",
+      "本研究の結果は、個人が特定されない集計形式、または個人を特定できないよう加工した形式で報告されます。学術論文、報告書、学会発表資料、その他の研究成果、または公開されるデータセットにおいて、個々の参加者が特定できる形で情報が公表されることはありません。",
+      "研究チームは、研究データおよび個人情報の機密性を保護するため、適切な安全管理措置を講じます。",
+    ],
+  },
+  {
+    heading: "データの保存および安全管理",
+    paragraphs: [
+      "研究データは、パスワードで保護されたコンピュータ、またはアクセス制限が施された安全なクラウドストレージに保存します。",
+      "研究データにアクセスできる者は、研究チームのうち、適切な権限を付与された者に限られます。",
+      "個人を特定できないよう加工した研究データは、将来の学術研究、追試・再現研究、および研究結果の検証を目的として保存される場合があります。",
+    ],
+  },
+  {
+    heading: "データの共有および公表",
+    paragraphs: [
+      "本研究で収集され、個人を特定できないよう加工されたデータは、Open Science Framework（OSF）、学術誌が指定するデータアーカイブ、またはその他の学術研究用データリポジトリにおいて公開される場合があります。",
+      "公開されるデータセットには、氏名、学籍番号、メールアドレス、その他の個人を直接識別できる情報は含まれません。外部の第三者が個々の参加者を合理的に特定できないよう、公開前に必要な加工および確認を行います。",
+      "公開されたデータは、学術論文、学会発表、追試・再現研究、および将来の関連研究に使用される場合があります。",
+    ],
+  },
+  {
+    heading: "倫理審査",
+    paragraphs: [
+      "本研究は、［倫理審査委員会または機関審査委員会の名称を記入］による倫理審査を受け、承認されています。",
+      "承認番号は、［承認番号を記入］です。",
+    ],
+  },
+  {
+    heading: "質問および問い合わせ先",
+    paragraphs: ["本研究の内容または実施方法について質問がある場合は、研究担当者までご連絡ください。"],
+  },
+];
+const CONSENT_CONFIRMATIONS = [
+  "上記の説明文書を読み、その内容を理解しました。",
+  "本研究について質問する機会があり、必要に応じて説明を受けることができると理解しています。",
+  "本研究への参加は任意であり、参加しないことによって不利益を受けることはないと理解しています。",
+  "回答データを送信または提出する前であれば、いつでも、理由を述べることなく、不利益を受けずに研究への参加を中止できると理解しています。",
+  "個人を特定できないよう加工された私の研究データが、学術研究、学会発表、論文その他の研究成果の公表、および将来の関連研究に使用される場合があると理解しています。",
+  "個人を特定できないよう加工された私の研究データが、学術研究用データリポジトリにおいて公開される場合があると理解しています。",
+  "学術論文、研究発表資料または公開データセットには、私を直接識別できる情報が含まれないと理解しています。",
+];
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
@@ -75,6 +190,9 @@ const STORAGE_KEY = "pwf-research-app";
 const state = {
   phase: "setup",
   participant: "",
+  gender: "",
+  consentChoice: "",
+  consentAcceptedAt: "",
   assignment: null,
   blockIndex: 0,
   taskIndex: 0,
@@ -220,6 +338,10 @@ function saveState() {
     designVersion: DESIGN_VERSION,
     phase: state.phase,
     participant: state.participant,
+    gender: state.gender,
+    consentVersion: CONSENT_VERSION,
+    consentChoice: state.consentChoice,
+    consentAcceptedAt: state.consentAcceptedAt,
     assignment: state.assignment,
     blockIndex: state.blockIndex,
     taskIndex: state.taskIndex,
@@ -243,6 +365,8 @@ function restoreState(expectedParticipant = "") {
   if (!saved || typeof saved !== "object") return false;
   if (saved.designVersion !== DESIGN_VERSION) return false;
   if (!saved.participant || !saved.assignment) return false;
+  if (!GENDER_OPTIONS.includes(saved.gender)) return false;
+  if (saved.consentVersion !== CONSENT_VERSION || saved.consentChoice !== "agree" || !saved.consentAcceptedAt) return false;
   const savedParticipant = String(saved.participant);
   if (expectedParticipant && savedParticipant !== String(expectedParticipant)) return false;
 
@@ -286,6 +410,9 @@ function restoreState(expectedParticipant = "") {
   Object.assign(state, {
     phase: normalizedPhase,
     participant: savedParticipant,
+    gender: saved.gender,
+    consentChoice: saved.consentChoice,
+    consentAcceptedAt: saved.consentAcceptedAt,
     assignment,
     blockIndex,
     taskIndex: boundedTaskIndex,
@@ -369,6 +496,9 @@ function returnToSetupScreen() {
   Object.assign(state, {
     phase: "setup",
     participant: "",
+    gender: "",
+    consentChoice: "",
+    consentAcceptedAt: "",
     assignment: null,
     runtime: null,
     taskOrder: [],
@@ -399,25 +529,78 @@ function scrollToTopAfterRender() {
 
 function renderSetup() {
   document.title = PILOT_MODE ? "PWF実験(パイロット)" : "PWF実験";
+  const canContinue = canContinueFromSetup(state.participant, state.gender, state.consentChoice);
   app.innerHTML = `
-    <main class="screen narrow-screen">
-      <section class="center-card">
+    <main class="screen consent-setup-screen">
+      <section class="center-card consent-setup-card">
         ${PILOT_MODE ? `<div class="step-label">パイロット</div>` : ""}
         <h1 class="app-title">${PILOT_MODE ? "PWF実験(パイロット)" : "PWF実験"}</h1>
+        <p class="consent-intro">実験を始める前に、以下の説明文書をお読みください。</p>
+        ${renderConsentDocument()}
         <form class="setup-form" id="setupForm">
           <div class="field">
             <label for="participant">学籍番号（7桁）</label>
             <input id="participant" type="text" inputmode="numeric" maxlength="7" pattern="[0-9]{7}" value="${escapeHtml(state.participant)}" placeholder="例: 1234567" autofocus />
           </div>
+          <fieldset class="choice-fieldset">
+            <legend>性別</legend>
+            <div class="choice-group" role="radiogroup" aria-label="性別">
+              ${renderRadioChoice("gender", "male", "男性", state.gender)}
+              ${renderRadioChoice("gender", "female", "女性", state.gender)}
+            </div>
+          </fieldset>
+          <fieldset class="choice-fieldset consent-choice-fieldset">
+            <legend>研究参加への同意</legend>
+            <p class="field-help">説明文書を理解した上で、参加の意思を選択してください。</p>
+            <div class="choice-group" role="radiogroup" aria-label="研究参加への同意">
+              ${renderRadioChoice("consent", "agree", "本研究への参加に同意します", state.consentChoice)}
+              ${renderRadioChoice("consent", "decline", "本研究への参加に同意しません", state.consentChoice)}
+            </div>
+            <p class="consent-declined" id="consentDeclined">同意いただけない場合は、実験を開始できません。</p>
+          </fieldset>
           ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
-          <button class="btn-primary" type="submit">割り当てて開始</button>
+          <button class="btn-primary setup-submit" id="setupSubmit" type="submit" ${canContinue ? "" : "disabled"}>割り当てて開始</button>
         </form>
       </section>
     </main>
   `;
+  const participantInput = document.getElementById("participant");
+  const genderInputs = document.querySelectorAll('input[name="gender"]');
+  const consentInputs = document.querySelectorAll('input[name="consent"]');
+
+  participantInput.addEventListener("input", () => {
+    state.participant = participantInput.value;
+    updateSetupSubmitState();
+  });
+  genderInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      state.gender = input.value;
+      updateSetupSubmitState();
+    });
+  });
+  consentInputs.forEach((input) => {
+    input.addEventListener("change", () => {
+      state.consentChoice = input.value;
+      state.consentAcceptedAt = input.value === "agree" ? new Date().toISOString() : "";
+      updateSetupSubmitState();
+    });
+  });
+
   document.getElementById("setupForm").addEventListener("submit", (event) => {
     event.preventDefault();
-    const value = document.getElementById("participant").value.trim();
+    const value = participantInput.value.trim();
+    const gender = state.gender;
+    const consentChoice = state.consentChoice;
+    if (!GENDER_OPTIONS.includes(gender)) {
+      state.error = "性別を選択してください。";
+      render();
+      return;
+    }
+    if (consentChoice !== "agree") {
+      state.error = "実験を始めるには、本研究への参加に同意する必要があります。";
+      render();
+      return;
+    }
     const assignment = assignBlockFromStudentId(value);
     if (assignment.error) {
       state.error = assignment.error;
@@ -428,6 +611,9 @@ function renderSetup() {
       postEmbeddedMessage({
         type: "pwf-start",
         participant: state.participant,
+        gender: state.gender,
+        consent_version: CONSENT_VERSION,
+        consent_accepted_at: state.consentAcceptedAt,
         assignment: state.assignment,
       });
       pushRunningHistory();
@@ -436,6 +622,9 @@ function renderSetup() {
       return;
     }
     state.participant = value;
+    state.gender = gender;
+    state.consentChoice = consentChoice;
+    state.consentAcceptedAt = state.consentAcceptedAt || new Date().toISOString();
     state.assignment = assignment;
     state.phase = "blockIntro";
     state.blockIndex = assignment.blockIndex;
@@ -452,11 +641,58 @@ function renderSetup() {
     postEmbeddedMessage({
       type: "pwf-start",
       participant: state.participant,
+      gender: state.gender,
+      consent_version: CONSENT_VERSION,
+      consent_accepted_at: state.consentAcceptedAt,
       assignment: state.assignment,
     });
     pushRunningHistory();
     render();
   });
+}
+
+function renderConsentDocument() {
+  const sections = CONSENT_SECTIONS.map(({ heading, paragraphs }) => `
+    <section class="consent-section">
+      <h2>${escapeHtml(heading)}</h2>
+      ${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}
+    </section>
+  `).join("");
+  const confirmations = CONSENT_CONFIRMATIONS.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `
+    <section class="consent-document" aria-labelledby="consentDocumentTitle" tabindex="0">
+      <h2 id="consentDocumentTitle">研究参加者への説明文書および同意書</h2>
+      ${sections}
+      <section class="consent-section">
+        <h2>同意事項</h2>
+        <p>以下の内容をよくお読みください。</p>
+        <p>「本研究への参加に同意します」を選択することにより、私は、以下の事項を確認した上で、本研究への参加に同意します。</p>
+        <ol>${confirmations}</ol>
+        <p>上記の内容を理解した上で、本研究への参加に同意します。</p>
+      </section>
+    </section>
+  `;
+}
+
+function renderRadioChoice(name, value, label, selectedValue) {
+  return `
+    <label class="choice-option">
+      <input type="radio" name="${escapeHtml(name)}" value="${escapeHtml(value)}" ${selectedValue === value ? "checked" : ""} />
+      <span>${escapeHtml(label)}</span>
+    </label>
+  `;
+}
+
+function canContinueFromSetup(participant, gender, consentChoice) {
+  return /^\d{7}$/.test(String(participant ?? "").trim())
+    && GENDER_OPTIONS.includes(gender)
+    && consentChoice === "agree";
+}
+
+function updateSetupSubmitState() {
+  const participant = document.getElementById("participant")?.value ?? state.participant;
+  const submit = document.getElementById("setupSubmit");
+  if (submit) submit.disabled = !canContinueFromSetup(participant, state.gender, state.consentChoice);
 }
 
 function renderBlockIntro() {
@@ -480,7 +716,7 @@ function renderBlockIntro() {
     state.phase = "practice";
     state.taskIndex = 0;
     state.runtime = null;
-    state.taskModes = createTaskModes(orderedBlock);
+    state.taskModes = createTaskModes(orderedBlock, state.participant);
     state.taskTimedOut = false;
     state.memoryChallenge = null;
     state.practiceFeedback = null;
@@ -600,11 +836,20 @@ function startFormalTasks() {
   startCurrentTaskFlow();
 }
 
-function createTaskModes(blockOrTasks) {
+function createTaskModes(blockOrTasks, participant = state.participant) {
   const tasks = Array.isArray(blockOrTasks) ? blockOrTasks : blockOrTasks.tasks;
+  const blockId = Array.isArray(blockOrTasks) ? "ad-hoc-task-list" : blockOrTasks.id;
   const taskCount = tasks.length;
   const modes = Array.from({ length: taskCount }, () => MODE_NORMAL);
-  const randomizedIndexes = shuffle(Array.from({ length: Math.max(0, taskCount - 1) }, (_, index) => index + 1));
+  const random = createSeededRandom([
+    "pwf-cp-task-assignment",
+    CP_ASSIGNMENT_ALGORITHM,
+    DESIGN_VERSION,
+    String(participant ?? ""),
+    String(blockId ?? ""),
+  ].join("|"));
+  // Every task is eligible; CP is not reserved away from the first displayed task.
+  const randomizedIndexes = shuffle(Array.from({ length: taskCount }, (_, index) => index), random);
   const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, randomizedIndexes.length);
   const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, randomizedIndexes.length - timePressureCount);
   randomizedIndexes.slice(0, timePressureCount).forEach((index) => {
@@ -616,10 +861,26 @@ function createTaskModes(blockOrTasks) {
   return modes;
 }
 
-function shuffle(items) {
+function createSeededRandom(seedText) {
+  let seed = 2166136261;
+  for (let index = 0; index < seedText.length; index += 1) {
+    seed ^= seedText.charCodeAt(index);
+    seed = Math.imul(seed, 16777619);
+  }
+  seed >>>= 0;
+  return () => {
+    seed += 0x6D2B79F5;
+    let value = seed;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle(items, random = Math.random) {
   const copy = [...items];
   for (let index = copy.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
+    const swapIndex = Math.floor(random() * (index + 1));
     [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
   }
   return copy;
@@ -2099,6 +2360,9 @@ function recordTask(block, task, payload) {
   const record = {
     pwf_trial: state.records.length + 1,
     participant: state.participant,
+    gender: state.gender,
+    consent_version: CONSENT_VERSION,
+    consent_accepted_at: state.consentAcceptedAt,
     assignment_group: state.assignment?.groupNumber ?? "",
     assignment_modulus: state.assignment?.modulus ?? "",
     student_id_last3: state.assignment?.lastThreeText ?? "",
@@ -2135,6 +2399,9 @@ function recordTask(block, task, payload) {
   postEmbeddedMessage({
     type: "pwf-record",
     participant: state.participant,
+    gender: state.gender,
+    consent_version: CONSENT_VERSION,
+    consent_accepted_at: state.consentAcceptedAt,
     assignment: state.assignment,
     record,
   });
@@ -2565,6 +2832,9 @@ function updateCurrentMemoryRecord() {
   postEmbeddedMessage({
     type: "pwf-record",
     participant: state.participant,
+    gender: state.gender,
+    consent_version: CONSENT_VERSION,
+    consent_accepted_at: state.consentAcceptedAt,
     assignment: state.assignment,
     record,
   });
@@ -2584,6 +2854,9 @@ function renderFinish() {
     postEmbeddedMessage({
       type: "pwf-complete",
       participant: state.participant,
+      gender: state.gender,
+      consent_version: CONSENT_VERSION,
+      consent_accepted_at: state.consentAcceptedAt,
       assignment: state.assignment,
       record_count: state.records.length,
     });
@@ -2889,7 +3162,7 @@ function runSmokeTest() {
     state.assignment = assignBlockFromStudentId(state.participant);
     state.taskOrder = createTaskOrder(BASE_BLOCKS[blockIndex], state.participant);
     const block = currentBlock();
-    state.taskModes = createTaskModes(block);
+    state.taskModes = createTaskModes(block, state.participant);
     const modeCounts = countModes(state.taskModes);
     const expectedModeCounts = expectedTaskModeCounts(block);
     const expectedTaskCount = expectedTaskCountForBlock(block);
@@ -2903,8 +3176,14 @@ function runSmokeTest() {
     ) {
       failures.push(`${block.title} mode counts normal=${modeCounts[MODE_NORMAL] ?? 0}, time_pressure=${modeCounts[MODE_TIME_PRESSURE] ?? 0}, number_memory=${modeCounts[MODE_NUMBER_MEMORY] ?? 0}`);
     }
-    if (state.taskModes[0] !== MODE_NORMAL) {
-      failures.push(`${block.title} first task mode ${state.taskModes[0]}, expected normal`);
+    if (state.taskModes.join("|") !== createTaskModes(block, state.participant).join("|")) {
+      failures.push(`${block.title} CP assignment is not reproducible for the same student and block`);
+    }
+    const firstTaskCanReceiveCp = Array.from({ length: 24 }, (_, offset) => (
+      createTaskModes(block, String(8888000 + blockIndex * 100 + offset))[0]
+    )).some((mode) => mode !== MODE_NORMAL);
+    if (!firstTaskCanReceiveCp) {
+      failures.push(`${block.title} first task was never eligible for CP in the seeded assignment check`);
     }
     block.tasks.forEach((task, taskIndex) => {
       state.taskIndex = taskIndex;
@@ -2970,9 +3249,6 @@ function runSmokeTest() {
     ) {
       failures.push(`${block.title} exported mode counts normal=${modeCounts[MODE_NORMAL] ?? 0}, time_pressure=${modeCounts[MODE_TIME_PRESSURE] ?? 0}, number_memory=${modeCounts[MODE_NUMBER_MEMORY] ?? 0}`);
     }
-    if (blockRecords[0]?.task_mode !== MODE_NORMAL) {
-      failures.push(`${block.title} first exported task mode ${blockRecords[0]?.task_mode}, expected normal`);
-    }
     const timePressureSeconds = timePressureSecondsForBlock(block);
     if (blockRecords.some((record) => record.task_mode === MODE_TIME_PRESSURE && record.time_limit_seconds !== timePressureSeconds)) {
       failures.push(`${block.title} time pressure limit is not ${timePressureSeconds}`);
@@ -3006,7 +3282,7 @@ function expectedTaskCountForBlock(block) {
 
 function expectedTaskModeCounts(blockOrTaskCount) {
   const taskCount = typeof blockOrTaskCount === "number" ? blockOrTaskCount : blockOrTaskCount.tasks.length;
-  const pressureAssignable = Math.max(0, taskCount - 1);
+  const pressureAssignable = Math.max(0, taskCount);
   const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, pressureAssignable);
   const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, pressureAssignable - timePressureCount);
   return {

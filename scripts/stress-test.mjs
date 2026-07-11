@@ -224,18 +224,27 @@ async function runLimited(items, concurrency, worker) {
 
 async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
   const name = `stress-${studentId}`;
+  const gender = "male";
   const data = await requestJson(
     baseUrl,
     "/api/session/start",
     {
       method: "POST",
-      body: JSON.stringify({ student_id: studentId, name, study_mode: studyMode }),
+      body: JSON.stringify({
+        student_id: studentId,
+        name,
+        gender,
+        consent_version: "stress-test-v1",
+        consent_accepted_at: new Date().toISOString(),
+        study_mode: studyMode,
+      }),
     },
     timeoutMs,
   );
   return {
     studentId,
     name,
+    gender,
     sessionId: data.session_id,
     trials: data.trials || [],
     studyMode: data.study_mode || studyMode,
@@ -310,6 +319,7 @@ function buildPwfRecord(session, assignment, task, index) {
     session_id: session.sessionId,
     student_id: session.studentId,
     name: session.name,
+    gender: session.gender,
     study_mode: session.studyMode,
     pwf_trial: index + 1,
     participant: session.studentId,
@@ -383,6 +393,7 @@ function buildCiResult(session, trial, trialIndex, choice = "Indifferent") {
     session_id: session.sessionId,
     student_id: session.studentId,
     name: session.name,
+    gender: session.gender,
     study_mode: session.studyMode,
     experiment_mode: session.experimentMode,
     time_pressure_seconds: session.timePressureSeconds,
@@ -419,6 +430,43 @@ async function saveCi(baseUrl, session, trial, trialIndex, timeoutMs) {
       method: "POST",
       body: JSON.stringify(buildCiResult(session, trial, trialIndex)),
     },
+    timeoutMs,
+  );
+}
+
+const DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER = [2, 0, 4, 1, 3];
+
+function deterministicMirrorTrials(trials) {
+  if (trials.length !== DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER.length) {
+    throw new Error(`Expected 5 CI trials for mirror submission, received ${trials.length}`);
+  }
+  return DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER.map((index) => trials[index]);
+}
+
+async function saveCiMirror(baseUrl, session, trial, mirrorOrder, timeoutMs) {
+  return requestJson(
+    baseUrl,
+    "/api/ci-results/mirror",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: session.sessionId,
+        trial: trial.trial,
+        mirror_order: mirrorOrder,
+        mirror_choice: "Indifferent",
+        mirror_response_time_ms: 1100 + mirrorOrder,
+        mirror_timed_out: false,
+      }),
+    },
+    timeoutMs,
+  );
+}
+
+async function createCiSettlement(baseUrl, session, timeoutMs) {
+  return requestJson(
+    baseUrl,
+    `/api/session/${encodeURIComponent(session.sessionId)}/ci-settlement`,
+    { method: "POST" },
     timeoutMs,
   );
 }
@@ -525,12 +573,28 @@ async function main() {
   printStage(summarizeStage("prep PWF + CI except final", prepResults));
 
   const readyFinishers = finishingSessions.filter((_, index) => prepResults[index]?.ok);
-  console.log(`Phase 3: submitting final CI trial for ${readyFinishers.length} participants concurrently`);
+  console.log(`Phase 3: completing final CI trial, 5 mirrors, and settlement for ${readyFinishers.length} participants concurrently`);
   const finalResults = await Promise.all(readyFinishers.map(({ session }) => timed(
-    `final-ci:${session.studentId}`,
-    () => saveCi(options.baseUrl, session, session.trials[session.trials.length - 1], session.trials.length - 1, options.timeoutMs),
+    `complete-ci:${session.studentId}`,
+    async () => {
+      await saveCi(
+        options.baseUrl,
+        session,
+        session.trials[session.trials.length - 1],
+        session.trials.length - 1,
+        options.timeoutMs,
+      );
+
+      const mirrorTrials = deterministicMirrorTrials(session.trials);
+      for (let i = 0; i < mirrorTrials.length; i += 1) {
+        await saveCiMirror(options.baseUrl, session, mirrorTrials[i], i + 1, options.timeoutMs);
+      }
+
+      await createCiSettlement(options.baseUrl, session, options.timeoutMs);
+      return { finalCiRows: 1, mirrorRows: mirrorTrials.length, settlementWrites: 1 };
+    },
   )));
-  printStage(summarizeStage("final CI concurrent save", finalResults));
+  printStage(summarizeStage("final CI + mirrors + settlement", finalResults));
 
   let downloadResults = [];
   if (!options.skipDownloads) {
@@ -546,7 +610,7 @@ async function main() {
   const summaries = [
     summarizeStage("session/start", startResults),
     summarizeStage("prep PWF + CI except final", prepResults),
-    summarizeStage("final CI concurrent save", finalResults),
+    summarizeStage("final CI + mirrors + settlement", finalResults),
     ...(options.skipDownloads ? [] : [summarizeStage("CSV concurrent download", downloadResults)]),
   ];
   const failedTotal = summaries.reduce((sum, summary) => sum + summary.failed, 0);
@@ -555,7 +619,9 @@ async function main() {
     prepResults.filter((result) => result.ok).reduce((sum, result) => (
       sum + result.value.pwfRows + 1 + result.value.ciPreparedRows
     ), 0) +
-    finalResults.filter((result) => result.ok).length;
+    finalResults.filter((result) => result.ok).reduce((sum, result) => (
+      sum + result.value.finalCiRows + result.value.mirrorRows + result.value.settlementWrites
+    ), 0);
   console.log("Expected successful POST writes:", expectedApiWrites);
   console.log("Stress test result:", failedTotal === 0 ? "PASS" : "FAIL");
   if (failedTotal > 0) process.exitCode = 1;

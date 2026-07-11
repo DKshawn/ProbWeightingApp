@@ -123,6 +123,139 @@ button, input {
   text-align: left;
 }
 
+.consent-setup-screen {
+  width: min(960px, 100%);
+  justify-content: flex-start;
+}
+
+.consent-setup-card {
+  width: min(880px, 100%);
+  margin: 18px auto;
+  align-items: stretch;
+  text-align: left;
+}
+
+.consent-setup-card .app-title,
+.consent-setup-card .consent-intro {
+  text-align: center;
+}
+
+.consent-setup-card .setup-form {
+  width: 100%;
+}
+
+.consent-intro {
+  color: #475569;
+  font-size: 0.96rem;
+}
+
+.consent-document {
+  max-height: min(48vh, 560px);
+  overflow-y: auto;
+  padding: 18px;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.consent-document > h2 {
+  margin-bottom: 14px;
+  color: #172033;
+  font-size: 1.15rem;
+}
+
+.consent-section + .consent-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.consent-section h2 {
+  margin-bottom: 6px;
+  color: #1e3a8a;
+  font-size: 0.98rem;
+}
+
+.consent-section p + p {
+  margin-top: 7px;
+}
+
+.consent-section ol {
+  margin: 8px 0 0 1.35rem;
+}
+
+.consent-section li + li {
+  margin-top: 5px;
+}
+
+.choice-fieldset {
+  padding: 0;
+  border: 0;
+}
+
+.choice-fieldset legend {
+  margin-bottom: 8px;
+  color: #444;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.field-help {
+  margin: -2px 0 10px;
+  color: #64748b;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.choice-option {
+  display: inline-flex;
+  flex: 1 1 200px;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 9px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.choice-option:has(input:checked) {
+  border-color: #3a86ff;
+  box-shadow: 0 0 0 3px rgba(58, 134, 255, 0.12);
+}
+
+.choice-option input {
+  width: 18px;
+  height: 18px;
+  accent-color: #2563eb;
+}
+
+.consent-choice-fieldset .consent-declined {
+  margin-top: 10px;
+  color: #dc2626;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.hidden {
+  display: none;
+}
+
+.setup-submit {
+  align-self: center;
+}
+
 .field {
   display: flex;
   flex-direction: column;

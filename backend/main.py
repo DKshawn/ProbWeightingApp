@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 try:
-    from .models.result import CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
+    from .models.result import CiMirrorResult, CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
     from .storage import (
         DuplicateSubmissionError,
         StorageError,
@@ -30,15 +30,17 @@ try:
         has_other_completed_submission,
         mark_session_completed_if_ready,
         mark_pwf_completed,
+        save_ci_mirror_result as save_ci_mirror_result_record,
         save_ci_result as save_ci_result_record,
         save_pwf_results as save_pwf_result_records,
         save_utility_results as save_utility_result_records,
         storage_mode,
         touch_session,
+        update_session_enrollment,
     )
     from .trial_generator import generate_all_trials
 except ImportError:
-    from models.result import CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
+    from models.result import CiMirrorResult, CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
     from storage import (
         DuplicateSubmissionError,
         StorageError,
@@ -58,11 +60,13 @@ except ImportError:
         has_other_completed_submission,
         mark_session_completed_if_ready,
         mark_pwf_completed,
+        save_ci_mirror_result as save_ci_mirror_result_record,
         save_ci_result as save_ci_result_record,
         save_pwf_results as save_pwf_result_records,
         save_utility_results as save_utility_result_records,
         storage_mode,
         touch_session,
+        update_session_enrollment,
     )
     from trial_generator import generate_all_trials
 
@@ -162,6 +166,9 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
     return {
         "session_id": session_id,
         "trials": session["trials"],
+        "gender": session.get("gender", ""),
+        "consent_version": session.get("consent_version", ""),
+        "consent_accepted_at": session.get("consent_accepted_at"),
         "experiment_mode": session.get("experiment_mode", "normal"),
         "time_pressure_seconds": session.get("time_pressure_seconds", 0),
         "pwf_experiment_mode": _assign_pwf_experiment_mode(session["student_id"])[0],
@@ -197,13 +204,30 @@ def start_session(req: SessionStartRequest):
         if resume_session:
             if mark_session_completed_if_ready(resume_session["session_id"]):
                 _completed_submission_error()
+            update_session_enrollment(
+                resume_session["session_id"],
+                req.gender,
+                req.consent_version,
+                req.consent_accepted_at,
+            )
             touch_session(resume_session["session_id"])
             resume_session = get_session(resume_session["session_id"])
             return _build_session_response(resume_session, resumed=True)
 
         session_id = str(uuid.uuid4())
         trials = generate_all_trials(study_mode=study_mode, student_id=student_id)
-        create_session(session_id, student_id, name, trials, study_mode, experiment_mode, time_pressure_seconds)
+        create_session(
+            session_id,
+            student_id,
+            name,
+            req.gender,
+            req.consent_version,
+            req.consent_accepted_at,
+            trials,
+            study_mode,
+            experiment_mode,
+            time_pressure_seconds,
+        )
         session = get_session(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
@@ -226,6 +250,21 @@ def save_ci_result(result: CiResult):
         _raise_storage_http_error(exc)
 
     return {"status": "ok", "session_completed": session_completed}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ci-results/mirror
+# ---------------------------------------------------------------------------
+@app.post("/api/ci-results/mirror")
+def save_ci_mirror_result(result: CiMirrorResult):
+    _session_can_accept_writes(result.session_id)
+
+    try:
+        saved = save_ci_mirror_result_record(result.model_dump())
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "mirror": saved}
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +346,16 @@ def save_pwf_results(batch: PwfBatch):
 # GET /api/ci-results/{student_id}/csv
 # ---------------------------------------------------------------------------
 CI_CSV_COLUMNS = [
-    "StudentID", "StudentIDHash", "Name", "Trial", "Block", "N",
+    "StudentID", "StudentIDHash", "Name", "Gender", "Trial", "Block", "N",
     "study_mode", "experiment_mode", "time_pressure_seconds",
     "student_id_last_digit", "amount_level", "amount_multiplier",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
     "choice", "ci_satisfied", "response_time_ms", "timed_out",
+    "mirror_order", "mirror_left_option", "mirror_right_option",
+    "mirror_choice", "mirror_canonical_choice", "mirror_ci_satisfied",
+    "mirror_response_time_ms", "mirror_timed_out", "mirror_timestamp",
     "step1_selected_option", "step1_selection_method", "step1_probability",
     "step1_option_amount", "step1_random_draw", "step1_reward_amount",
     "step2_selected_option", "step2_selection_method", "step2_probability",
@@ -323,13 +365,20 @@ CI_CSV_COLUMNS = [
     "step4_selected_option", "step4_selection_method", "step4_probability",
     "step4_option_amount", "step4_random_draw", "step4_reward_amount",
     "ci_trial_payment_total", "ci_final_payment_selected", "ci_final_selected_trial",
-    "ci_final_payment_total", "ci_final_payment_rule", "ci_final_settled_at", "Timestamp",
+    "ci_final_payment_total", "ci_final_payment_rule",
+    "ci_final_selected_decision", "ci_final_selected_response",
+    "ci_final_selected_canonical_response", "ci_final_selected_display_option",
+    "ci_final_selected_canonical_option", "ci_final_selected_selection_method",
+    "ci_final_selected_probability", "ci_final_selected_option_amount",
+    "ci_final_selected_random_draw", "ci_final_selected_reward_amount",
+    "ci_final_settled_at", "Timestamp",
 ]
 
 CI_FIELD_MAP = {
     "StudentID": "student_id",
     "StudentIDHash": "student_id_hash",
     "Name": "name",
+    "Gender": "gender",
     "study_mode": "study_mode",
     "Trial": "trial",
     "Block": "block",
@@ -355,6 +404,15 @@ CI_FIELD_MAP = {
     "ci_satisfied": "ci_satisfied",
     "response_time_ms": "response_time_ms",
     "timed_out": "timed_out",
+    "mirror_order": "mirror_order",
+    "mirror_left_option": "mirror_left_option",
+    "mirror_right_option": "mirror_right_option",
+    "mirror_choice": "mirror_choice",
+    "mirror_canonical_choice": "mirror_canonical_choice",
+    "mirror_ci_satisfied": "mirror_ci_satisfied",
+    "mirror_response_time_ms": "mirror_response_time_ms",
+    "mirror_timed_out": "mirror_timed_out",
+    "mirror_timestamp": "mirror_timestamp",
     "ci_trial_payment_total": "trial_payment_total",
     "ci_final_payment_selected": "ci_final_payment_selected",
     "ci_final_selected_trial": "ci_final_selected_trial",
@@ -399,7 +457,7 @@ UTILITY_FIELD_MAP = {
 }
 
 PWF_CSV_COLUMNS = [
-    "session_id", "StudentID", "StudentIDHash", "Name", "study_mode", "pwf_trial",
+    "session_id", "StudentID", "StudentIDHash", "Name", "Gender", "study_mode", "pwf_trial",
     "participant", "assignment_group", "assignment_modulus", "student_id_last3",
     "student_id_last_digit", "amount_level", "amount_multiplier", "assigned_block_id",
     "block_id", "block_title", "task_id", "task_category", "is_anchor", "task_index",
@@ -423,6 +481,7 @@ PWF_FIELD_MAP = {
     "StudentID": "student_id",
     "StudentIDHash": "student_id_hash",
     "Name": "name",
+    "Gender": "gender",
     "study_mode": "study_mode",
     "pwf_trial": "pwf_trial",
     "participant": "participant",
@@ -511,6 +570,20 @@ def download_ci_csv(student_id: str):
                 f"step{step}_random_draw": detail.get("random_draw", ""),
                 f"step{step}_reward_amount": detail.get("reward_amount", ""),
             })
+        selected_decision = r.get("ci_final_selected_decision_details")
+        selected_decision = selected_decision if isinstance(selected_decision, dict) else {}
+        row.update({
+            "ci_final_selected_decision": selected_decision.get("decision", ""),
+            "ci_final_selected_response": selected_decision.get("response", ""),
+            "ci_final_selected_canonical_response": selected_decision.get("canonical_response", ""),
+            "ci_final_selected_display_option": selected_decision.get("selected_display_option", ""),
+            "ci_final_selected_canonical_option": selected_decision.get("selected_canonical_option", ""),
+            "ci_final_selected_selection_method": selected_decision.get("selection_method", ""),
+            "ci_final_selected_probability": selected_decision.get("probability", ""),
+            "ci_final_selected_option_amount": selected_decision.get("option_amount", ""),
+            "ci_final_selected_random_draw": selected_decision.get("random_draw", ""),
+            "ci_final_selected_reward_amount": selected_decision.get("reward_amount", ""),
+        })
         writer.writerow(row)
 
     output.seek(0)

@@ -1,31 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import ProgressBar from "./ProgressBar";
 
 function formatPercentage(probability) {
   return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
 }
 
-export default function Step4Screen({
-  trial,
-  stepData,
-  trialIndex,
-  totalTrials,
-  onNext,
-  loading,
-  error,
-}) {
-  const { r, x_prime, N, block } = trial;
-  const { s, y_prime } = stepData;
-  const rN = formatPercentage(r ** N);
-  const sN = formatPercentage(s ** N);
-  const trialNum = trialIndex + 1;
+export default function MirrorStep4Screen({ record, onNext, loading, error }) {
   const [isFinished, setIsFinished] = useState(false);
   const startTimeRef = useRef(null);
   const finishedRef = useRef(false);
 
   useEffect(() => {
     startTimeRef.current = performance.now();
-  }, [trialIndex]);
+  }, []);
 
   async function submitChoice(choice, event) {
     if (finishedRef.current || loading) return;
@@ -56,9 +42,7 @@ export default function Step4Screen({
 
   return (
     <div className="screen">
-      <ProgressBar current={trialNum} total={totalTrials} block={block} N={N} />
-
-      <div className="step-label">Step 4</div>
+      <div className="step-label">くじの比較</div>
 
       <p className="question-intro">以下の2つのくじを比べてください：</p>
 
@@ -66,9 +50,9 @@ export default function Step4Screen({
         <div className="lottery-box lottery-x">
           <div className="lottery-label">選択肢A</div>
           <div className="lottery-detail">
-            確率 <strong>{rN}</strong> で
+            確率 <strong>{formatPercentage(record.sN)}</strong> で
           </div>
-          <div className="lottery-amount">{x_prime}円</div>
+          <div className="lottery-amount">{record.y_prime}円</div>
         </div>
 
         <div className="vs-label">vs</div>
@@ -76,9 +60,9 @@ export default function Step4Screen({
         <div className="lottery-box lottery-y">
           <div className="lottery-label">選択肢B</div>
           <div className="lottery-detail">
-            確率 <strong>{sN}</strong> で
+            確率 <strong>{formatPercentage(record.rN)}</strong> で
           </div>
-          <div className="lottery-amount">{y_prime}円</div>
+          <div className="lottery-amount">{record.x_prime}円</div>
         </div>
       </div>
 

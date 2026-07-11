@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import {
   completePwfSession,
   createCiSettlement,
+  saveCiMirrorResult,
   saveCiResult,
   savePwfResults,
   startSession,
@@ -29,9 +30,49 @@ function firstUnansweredTrialIndex(trials, savedTrialResults) {
   return index < 0 ? trials.length : index;
 }
 
-function stepForTrialResume(trials, trialIndex, ciSettlement) {
+function hashSeed(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function buildMirrorTrialOrder(trials, sessionId) {
+  const order = trials.map((_, index) => index);
+  let state = hashSeed(`${sessionId}:ci-mirror-v1`);
+
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    const swapIndex = state % (index + 1);
+    [order[index], order[swapIndex]] = [order[swapIndex], order[index]];
+  }
+
+  if (order.length > 1 && order.every((trialIndex, index) => trialIndex === index)) {
+    order.push(order.shift());
+  }
+
+  return order;
+}
+
+function firstUnansweredMirrorOrderIndex(mirrorTrialOrder, trials, savedTrialResults) {
+  const savedByTrial = new Map(
+    (savedTrialResults || []).map((row) => [Number(row.trial), row]),
+  );
+  const index = mirrorTrialOrder.findIndex((trialIndex) => {
+    const trialNumber = Number(trials[trialIndex]?.trial);
+    return savedByTrial.get(trialNumber)?.mirror_choice == null;
+  });
+  return index < 0 ? mirrorTrialOrder.length : index;
+}
+
+function stepForTrialResume(trials, trialIndex, mirrorOrderIndex, ciSettlement) {
   if (!trials.length) return 5;
-  if (trialIndex >= trials.length) return ciSettlement ? 7 : 9;
+  if (trialIndex >= trials.length) {
+    if (mirrorOrderIndex < trials.length) return 10;
+    return ciSettlement ? 7 : 9;
+  }
   if (trialIndex > 0 && trials[trialIndex]?.block !== trials[trialIndex - 1]?.block) return 6;
   return 1;
 }
@@ -47,55 +88,13 @@ function upsertCiRecord(records, nextRecord) {
   return [...withoutDuplicate, nextRecord].sort((a, b) => Number(a.trial) - Number(b.trial));
 }
 
-function settleStepFeedback(step, options, selectedOption, selectionMethod) {
-  const randomDraw = Math.random();
-  const rewardAmount = randomDraw < selectedOption.probability ? selectedOption.amount : 0;
-  return {
-    step,
-    options,
-    selectedOption: selectedOption.label,
-    rewardAmount,
-    selectionMethod,
-    randomDraw,
-  };
-}
-
-function paymentDetail(feedback) {
-  return {
-    selected_option: feedback.selectedOption,
-    selection_method: feedback.selectionMethod,
-    probability: feedback.options.find((option) => option.label === feedback.selectedOption)?.probability ?? 0,
-    option_amount: feedback.options.find((option) => option.label === feedback.selectedOption)?.amount ?? 0,
-    random_draw: feedback.randomDraw,
-    reward_amount: feedback.rewardAmount,
-  };
-}
-
-function paymentTotal(paymentDetails) {
-  return Object.values(paymentDetails).reduce((total, detail) => total + Number(detail?.reward_amount || 0), 0);
-}
-
-function createStepFeedback(step, options) {
-  const selectedOption = options[Math.floor(Math.random() * options.length)];
-  return settleStepFeedback(step, options, selectedOption, "random_indifference");
-}
-
-function createStep4Feedback(choice, options) {
-  const selectedOption = choice === "X"
-    ? options[0]
-    : choice === "Y"
-    ? options[1]
-    : options[Math.floor(Math.random() * options.length)];
-  const selectionMethod = choice === "Indifferent"
-    ? "random_indifferent_choice"
-    : "participant_choice";
-  return settleStepFeedback(4, options, selectedOption, selectionMethod);
-}
-
 export function useSession() {
   const [sessionId, setSessionId] = useState(null);
   const [studentId, setStudentId] = useState("");
   const [name, setName] = useState("");
+  const [gender, setGender] = useState("");
+  const [consentVersion, setConsentVersion] = useState("");
+  const [consentAcceptedAt, setConsentAcceptedAt] = useState("");
   const [studyMode, setStudyMode] = useState(getStudyModeFromUrl());
   const [experimentMode, setExperimentMode] = useState("normal");
   const [timePressureSeconds, setTimePressureSeconds] = useState(0);
@@ -103,9 +102,10 @@ export function useSession() {
   const [ciRecords, setCiRecords] = useState([]);
   const [trials, setTrials] = useState([]);
   const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement
+  const [mirrorTrialOrder, setMirrorTrialOrder] = useState([]);
+  const [currentMirrorOrderIndex, setCurrentMirrorOrderIndex] = useState(0);
+  const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement, 10=CI randomized comparison
   const [stepData, setStepData] = useState({});
-  const [stepFeedback, setStepFeedback] = useState(null);
   const [ciSettlement, setCiSettlement] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -116,6 +116,11 @@ export function useSession() {
   const pwfSaveFailedRef = useRef(false);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
+  const currentMirrorTrialIndex = mirrorTrialOrder[currentMirrorOrderIndex] ?? null;
+  const currentMirrorTrial = currentMirrorTrialIndex == null ? null : trials[currentMirrorTrialIndex] ?? null;
+  const currentMirrorRecord = currentMirrorTrial
+    ? ciRecords.find((record) => Number(record.trial) === Number(currentMirrorTrial.trial)) ?? null
+    : null;
   const totalTrials = trials.length;
 
   function beginOperation() {
@@ -130,16 +135,31 @@ export function useSession() {
     }
   }
 
-  function extractPwfStudentId(message) {
+  function extractPwfEnrollment(message) {
     const sid = String(message?.participant ?? "").trim();
     if (!sid) {
       throw new Error("学籍番号を取得できませんでした");
     }
-    return sid;
+    const resolvedGender = String(message?.gender ?? "");
+    if (!["male", "female"].includes(resolvedGender)) {
+      throw new Error("性別を取得できませんでした");
+    }
+    const resolvedConsentVersion = String(message?.consent_version ?? "").trim();
+    const resolvedConsentAcceptedAt = String(message?.consent_accepted_at ?? "").trim();
+    if (!resolvedConsentVersion || Number.isNaN(Date.parse(resolvedConsentAcceptedAt))) {
+      throw new Error("研究参加への同意を取得できませんでした");
+    }
+    return {
+      studentId: sid,
+      gender: resolvedGender,
+      consentVersion: resolvedConsentVersion,
+      consentAcceptedAt: resolvedConsentAcceptedAt,
+    };
   }
 
   async function ensurePwfSession(message) {
-    const sid = extractPwfStudentId(message);
+    const enrollment = extractPwfEnrollment(message);
+    const sid = enrollment.studentId;
     const requestedStudyMode = getStudyModeFromUrl();
     const currentSession = pwfSessionRef.current;
     if (currentSession?.studentId === sid && currentSession?.studyMode === requestedStudyMode) return currentSession;
@@ -151,7 +171,7 @@ export function useSession() {
     pwfSaveFailedRef.current = false;
 
     const sessionName = sid;
-    const promise = startSession(sid, sessionName, requestedStudyMode)
+    const promise = startSession(sid, sessionName, requestedStudyMode, enrollment)
       .then((data) => {
         const resolvedStudyMode = data.study_mode || requestedStudyMode;
         const resolvedTrials = data.trials || [];
@@ -160,10 +180,19 @@ export function useSession() {
         const savedCiSettlement = data.ci_settlement || null;
         const pwfCompleted = Boolean(data.pwf_completed) || savedTrialResults.length > 0;
         const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
+        const resolvedMirrorTrialOrder = buildMirrorTrialOrder(resolvedTrials, data.session_id);
+        const resumeMirrorOrderIndex = firstUnansweredMirrorOrderIndex(
+          resolvedMirrorTrialOrder,
+          resolvedTrials,
+          savedTrialResults,
+        );
         const session = {
           sessionId: data.session_id,
           studentId: sid,
           name: sessionName,
+          gender: data.gender || enrollment.gender,
+          consentVersion: data.consent_version || enrollment.consentVersion,
+          consentAcceptedAt: data.consent_accepted_at || enrollment.consentAcceptedAt,
           studyMode: resolvedStudyMode,
           trials: resolvedTrials,
           experimentMode: data.experiment_mode || "normal",
@@ -171,6 +200,8 @@ export function useSession() {
           savedTrialResults,
           savedPwfResults,
           pwfCompleted,
+          mirrorTrialOrder: resolvedMirrorTrialOrder,
+          resumeMirrorOrderIndex,
         };
 
         pwfSessionRef.current = session;
@@ -178,16 +209,26 @@ export function useSession() {
         setTrials(session.trials);
         setStudentId(session.studentId);
         setName(session.name);
+        setGender(session.gender);
+        setConsentVersion(session.consentVersion);
+        setConsentAcceptedAt(session.consentAcceptedAt);
         setStudyMode(session.studyMode);
         setExperimentMode(session.experimentMode);
         setTimePressureSeconds(session.timePressureSeconds);
         setPwfRecords(session.savedPwfResults);
         setCiRecords(session.savedTrialResults);
         setCiSettlement(savedCiSettlement);
+        setMirrorTrialOrder(session.mirrorTrialOrder);
+        setCurrentMirrorOrderIndex(session.resumeMirrorOrderIndex);
         setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
         if (pwfCompleted) {
-          setCurrentStep(stepForTrialResume(resolvedTrials, resumeTrialIndex, savedCiSettlement));
+          setCurrentStep(stepForTrialResume(
+            resolvedTrials,
+            resumeTrialIndex,
+            session.resumeMirrorOrderIndex,
+            savedCiSettlement,
+          ));
         }
         return session;
       })
@@ -217,6 +258,9 @@ export function useSession() {
       session_id: session.sessionId,
       student_id: session.studentId,
       name: session.name,
+      gender: session.gender,
+      consent_version: session.consentVersion,
+      consent_accepted_at: session.consentAcceptedAt,
       study_mode: session.studyMode,
       pwf_trial: pwfTrial,
     };
@@ -272,8 +316,15 @@ export function useSession() {
       session.pwfCompleted = true;
       const resumeTrialIndex = firstUnansweredTrialIndex(session.trials, session.savedTrialResults);
       setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(session.trials.length - 1, 0)));
+      setMirrorTrialOrder(session.mirrorTrialOrder);
+      setCurrentMirrorOrderIndex(session.resumeMirrorOrderIndex);
       setStepData({});
-      setCurrentStep(stepForTrialResume(session.trials, resumeTrialIndex, null));
+      setCurrentStep(stepForTrialResume(
+        session.trials,
+        resumeTrialIndex,
+        session.resumeMirrorOrderIndex,
+        null,
+      ));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -282,44 +333,18 @@ export function useSession() {
   }
 
   function submitStep1(y) {
-    const feedback = createStepFeedback(1, [
-      { label: "A", probability: currentTrial.p, amount: currentTrial.x },
-      { label: "B", probability: currentTrial.q, amount: y },
-    ]);
-    setStepFeedback(feedback);
-    setStepData((prev) => ({ ...prev, y, paymentDetails: { ...prev.paymentDetails, step1: paymentDetail(feedback) } }));
-    setCurrentStep(8);
+    setStepData((prev) => ({ ...prev, y }));
+    setCurrentStep(2);
   }
 
   function submitStep2(s) {
-    const feedback = createStepFeedback(2, [
-      { label: "A", probability: currentTrial.r, amount: currentTrial.x },
-      { label: "B", probability: s, amount: stepData.y },
-    ]);
-    setStepFeedback(feedback);
-    setStepData((prev) => ({ ...prev, s, paymentDetails: { ...prev.paymentDetails, step2: paymentDetail(feedback) } }));
-    setCurrentStep(8);
+    setStepData((prev) => ({ ...prev, s }));
+    setCurrentStep(3);
   }
 
   function submitStep3(yPrime) {
-    const N = currentTrial.N;
-    const feedback = createStepFeedback(3, [
-      { label: "A", probability: currentTrial.p ** N, amount: currentTrial.x_prime },
-      { label: "B", probability: currentTrial.q ** N, amount: yPrime },
-    ]);
-    setStepFeedback(feedback);
-    setStepData((prev) => ({ ...prev, y_prime: yPrime, paymentDetails: { ...prev.paymentDetails, step3: paymentDetail(feedback) } }));
-    setCurrentStep(8);
-  }
-
-  function continueStepFeedback() {
-    const completedStep = Number(stepFeedback?.step);
-    setStepFeedback(null);
-    if (completedStep === 4) {
-      advanceAfterStep4();
-      return;
-    }
-    setCurrentStep(completedStep + 1);
+    setStepData((prev) => ({ ...prev, y_prime: yPrime }));
+    setCurrentStep(4);
   }
 
   function advanceAfterStep4() {
@@ -332,7 +357,8 @@ export function useSession() {
       setCurrentStep(6);
     } else if (nextIndex >= totalTrials) {
       setStepData({});
-      setCurrentStep(9);
+      setCurrentMirrorOrderIndex(0);
+      setCurrentStep(10);
     } else {
       setCurrentTrialIndex(nextIndex);
       setStepData({});
@@ -351,23 +377,13 @@ export function useSession() {
     const sN = parseFloat((stepData.s ** N).toFixed(10));
     const timedOut = Boolean(timing.timedOut || choice === "Timeout");
     const ciSatisfied = !timedOut && choice === "Indifferent";
-    const step4Feedback = timedOut
-      ? null
-      : createStep4Feedback(choice, [
-          { label: "A", probability: rN, amount: trial.x_prime },
-          { label: "B", probability: sN, amount: stepData.y_prime },
-        ]);
-    const paymentDetails = {
-      ...(stepData.paymentDetails || {}),
-      ...(step4Feedback ? { step4: paymentDetail(step4Feedback) } : {}),
-    };
-    const trialPaymentTotal = timedOut ? 0 : paymentTotal(paymentDetails);
 
     try {
       const record = {
         session_id: sessionId,
         student_id: studentId,
         name,
+        gender,
         study_mode: studyMode,
         experiment_mode: experimentMode,
         time_pressure_seconds: timePressureSeconds,
@@ -393,21 +409,62 @@ export function useSession() {
         ci_satisfied: ciSatisfied,
         response_time_ms: timing.responseTimeMs ?? null,
         timed_out: timedOut,
-        payment_details: paymentDetails,
-        trial_payment_total: trialPaymentTotal,
+        payment_details: {},
+        trial_payment_total: 0,
       };
       await saveCiResult(record);
       setCiRecords((previous) => upsertCiRecord(previous, record));
-
-      if (timedOut) {
-        advanceAfterStep4();
-        return;
-      }
-
-      setStepFeedback(step4Feedback);
-      setCurrentStep(8);
+      advanceAfterStep4();
+      return true;
     } catch (e) {
       setError(e.message);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitMirrorStep4(choice, timing = {}) {
+    if (!currentMirrorTrial || !currentMirrorRecord) return false;
+
+    setLoading(true);
+    setError(null);
+    const timedOut = Boolean(timing.timedOut || choice === "Timeout");
+    const mirrorCanonicalChoice = choice === "X" ? "Y" : choice === "Y" ? "X" : choice;
+    const mirrorResult = {
+      session_id: sessionId,
+      trial: currentMirrorTrial.trial,
+      mirror_order: currentMirrorOrderIndex + 1,
+      mirror_choice: choice,
+      mirror_response_time_ms: timing.responseTimeMs ?? null,
+      mirror_timed_out: timedOut,
+    };
+
+    try {
+      await saveCiMirrorResult(mirrorResult);
+      setCiRecords((previous) => previous.map((record) => (
+        Number(record.trial) === Number(currentMirrorTrial.trial)
+          ? {
+              ...record,
+              ...mirrorResult,
+              mirror_left_option: "Y",
+              mirror_right_option: "X",
+              mirror_canonical_choice: mirrorCanonicalChoice,
+              mirror_ci_satisfied: !timedOut && choice === "Indifferent",
+            }
+          : record
+      )));
+
+      const nextMirrorOrderIndex = currentMirrorOrderIndex + 1;
+      if (nextMirrorOrderIndex >= mirrorTrialOrder.length) {
+        setCurrentStep(9);
+      } else {
+        setCurrentMirrorOrderIndex(nextMirrorOrderIndex);
+      }
+      return true;
+    } catch (e) {
+      setError(e.message);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -443,14 +500,17 @@ export function useSession() {
 
   return {
     studentId,
+    gender,
     pwfRecords,
     ciRecords,
     trials,
     currentTrialIndex,
     currentStep,
     currentTrial,
+    currentMirrorOrderIndex,
+    currentMirrorTrial,
+    currentMirrorRecord,
     stepData,
-    stepFeedback,
     ciSettlement,
     loading,
     error,
@@ -461,7 +521,7 @@ export function useSession() {
     submitStep2,
     submitStep3,
     submitStep4,
-    continueStepFeedback,
+    submitMirrorStep4,
     startNextBlock,
     loadCiSettlement,
     continueToPwfSettlement,

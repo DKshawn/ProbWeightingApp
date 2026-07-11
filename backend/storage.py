@@ -71,17 +71,19 @@ def _connect():
 def _database_schema_ready(cur) -> bool:
     required_columns = {
         "experiment_sessions": {
-            "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
+            "session_id", "student_id", "student_id_hash", "name", "gender", "consent_version", "consent_accepted_at", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trials", "status", "pwf_completed",
             "pwf_completed_at", "completed_at", "last_seen_at", "created_at",
         },
         "ci_results": {
-            "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
+            "session_id", "student_id", "student_id_hash", "name", "gender", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trial", "block", "n", "student_id_last_digit",
             "amount_level", "amount_multiplier", "p", "q", "r", "x", "x_prime",
             "y", "s", "y_prime", "pn", "qn", "rn", "sn", "choice",
             "ci_satisfied", "response_time_ms", "timed_out", "payment_details",
-            "trial_payment_total", "timestamp",
+            "trial_payment_total", "mirror_order", "mirror_left_option", "mirror_right_option",
+            "mirror_choice", "mirror_canonical_choice", "mirror_ci_satisfied",
+            "mirror_response_time_ms", "mirror_timed_out", "mirror_timestamp", "timestamp",
         },
         "ci_settlements": {
             "session_id", "student_id", "student_id_hash", "name", "study_mode",
@@ -96,7 +98,7 @@ def _database_schema_ready(cur) -> bool:
             "switch_status", "response_time_ms", "timed_out", "timestamp",
         },
         "pwf_results": {
-            "session_id", "student_id", "student_id_hash", "name", "study_mode", "pwf_trial",
+            "session_id", "student_id", "student_id_hash", "name", "gender", "study_mode", "pwf_trial",
             "participant", "assignment_group", "assignment_modulus",
             "student_id_last3", "student_id_last_digit", "amount_level",
             "amount_multiplier", "assigned_block_id", "block_id", "block_title",
@@ -186,6 +188,9 @@ def ensure_schema() -> None:
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    gender TEXT NOT NULL CHECK (gender IN ('male', 'female')),
+                    consent_version TEXT NOT NULL,
+                    consent_accepted_at TIMESTAMPTZ NOT NULL,
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -204,6 +209,7 @@ def ensure_schema() -> None:
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    gender TEXT NOT NULL CHECK (gender IN ('male', 'female')),
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -231,6 +237,15 @@ def ensure_schema() -> None:
                     timed_out BOOLEAN NOT NULL DEFAULT FALSE,
                     payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
                     trial_payment_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    mirror_order INTEGER,
+                    mirror_left_option TEXT,
+                    mirror_right_option TEXT,
+                    mirror_choice TEXT,
+                    mirror_canonical_choice TEXT,
+                    mirror_ci_satisfied BOOLEAN,
+                    mirror_response_time_ms INTEGER,
+                    mirror_timed_out BOOLEAN,
+                    mirror_timestamp TIMESTAMPTZ,
                     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     UNIQUE (session_id, trial)
                 );
@@ -285,6 +300,7 @@ def ensure_schema() -> None:
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    gender TEXT NOT NULL CHECK (gender IN ('male', 'female')),
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     pwf_trial INTEGER NOT NULL,
                     participant TEXT NOT NULL,
@@ -334,6 +350,9 @@ def ensure_schema() -> None:
 
                 ALTER TABLE experiment_sessions
                     ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
+                    ADD COLUMN IF NOT EXISTS gender TEXT,
+                    ADD COLUMN IF NOT EXISTS consent_version TEXT,
+                    ADD COLUMN IF NOT EXISTS consent_accepted_at TIMESTAMPTZ,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -352,6 +371,7 @@ def ensure_schema() -> None:
 
                 ALTER TABLE ci_results
                     ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
+                    ADD COLUMN IF NOT EXISTS gender TEXT,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
@@ -361,7 +381,16 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
                     ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    ADD COLUMN IF NOT EXISTS trial_payment_total DOUBLE PRECISION NOT NULL DEFAULT 0;
+                    ADD COLUMN IF NOT EXISTS trial_payment_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS mirror_order INTEGER,
+                    ADD COLUMN IF NOT EXISTS mirror_left_option TEXT,
+                    ADD COLUMN IF NOT EXISTS mirror_right_option TEXT,
+                    ADD COLUMN IF NOT EXISTS mirror_choice TEXT,
+                    ADD COLUMN IF NOT EXISTS mirror_canonical_choice TEXT,
+                    ADD COLUMN IF NOT EXISTS mirror_ci_satisfied BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS mirror_response_time_ms INTEGER,
+                    ADD COLUMN IF NOT EXISTS mirror_timed_out BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS mirror_timestamp TIMESTAMPTZ;
 
                 ALTER TABLE ci_results
                     DROP CONSTRAINT IF EXISTS ci_results_choice_check;
@@ -370,6 +399,28 @@ def ensure_schema() -> None:
                     ADD CONSTRAINT ci_results_choice_check
                     CHECK (choice IN ('X', 'Indifferent', 'Y', 'Timeout'));
 
+                ALTER TABLE ci_results
+                    DROP CONSTRAINT IF EXISTS ci_results_mirror_order_check,
+                    DROP CONSTRAINT IF EXISTS ci_results_mirror_left_option_check,
+                    DROP CONSTRAINT IF EXISTS ci_results_mirror_right_option_check,
+                    DROP CONSTRAINT IF EXISTS ci_results_mirror_choice_check,
+                    DROP CONSTRAINT IF EXISTS ci_results_mirror_canonical_choice_check;
+
+                ALTER TABLE ci_results
+                    ADD CONSTRAINT ci_results_mirror_order_check
+                        CHECK (mirror_order IS NULL OR mirror_order >= 1),
+                    ADD CONSTRAINT ci_results_mirror_left_option_check
+                        CHECK (mirror_left_option IS NULL OR mirror_left_option IN ('X', 'Y')),
+                    ADD CONSTRAINT ci_results_mirror_right_option_check
+                        CHECK (mirror_right_option IS NULL OR mirror_right_option IN ('X', 'Y')),
+                    ADD CONSTRAINT ci_results_mirror_choice_check
+                        CHECK (mirror_choice IS NULL OR mirror_choice IN ('X', 'Indifferent', 'Y', 'Timeout')),
+                    ADD CONSTRAINT ci_results_mirror_canonical_choice_check
+                        CHECK (
+                            mirror_canonical_choice IS NULL
+                            OR mirror_canonical_choice IN ('X', 'Indifferent', 'Y', 'Timeout')
+                        );
+
                 ALTER TABLE utility_results
                     ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
@@ -377,6 +428,7 @@ def ensure_schema() -> None:
 
                 ALTER TABLE pwf_results
                     ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
+                    ADD COLUMN IF NOT EXISTS gender TEXT,
                     ADD COLUMN IF NOT EXISTS student_id_last_digit TEXT,
                     ADD COLUMN IF NOT EXISTS amount_level TEXT,
                     ADD COLUMN IF NOT EXISTS amount_multiplier DOUBLE PRECISION,
@@ -417,6 +469,10 @@ def ensure_schema() -> None:
 
                 CREATE INDEX IF NOT EXISTS idx_ci_results_experiment_mode
                     ON ci_results(experiment_mode);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_results_mirror_order
+                    ON ci_results(session_id, mirror_order)
+                    WHERE mirror_order IS NOT NULL;
 
                 CREATE INDEX IF NOT EXISTS idx_ci_settlements_student_id
                     ON ci_settlements(student_id);
@@ -462,6 +518,9 @@ def create_session(
     session_id: str,
     student_id: str,
     name: str,
+    gender: str,
+    consent_version: str,
+    consent_accepted_at: datetime,
     trials: list[dict],
     study_mode: str = "full",
     experiment_mode: str = "normal",
@@ -474,6 +533,9 @@ def create_session(
             "student_id": student_id,
             "student_id_hash": student_id_hash,
             "name": name,
+            "gender": gender,
+            "consent_version": consent_version,
+            "consent_accepted_at": consent_accepted_at.isoformat(),
             "study_mode": study_mode,
             "experiment_mode": experiment_mode,
             "time_pressure_seconds": time_pressure_seconds,
@@ -493,20 +555,54 @@ def create_session(
             cur.execute(
                 """
                 INSERT INTO experiment_sessions (
-                    session_id, student_id, student_id_hash, name, study_mode, experiment_mode, time_pressure_seconds, trials
+                    session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
+                    study_mode, experiment_mode, time_pressure_seconds, trials
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     session_id,
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
+                    consent_version,
+                    consent_accepted_at,
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
                     Jsonb(trials),
                 ),
+            )
+        conn.commit()
+
+
+def update_session_enrollment(
+    session_id: str,
+    gender: str,
+    consent_version: str,
+    consent_accepted_at: datetime,
+) -> None:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        session = _memory_sessions.get(session_id)
+        if session:
+            session.update({
+                "gender": gender,
+                "consent_version": consent_version,
+                "consent_accepted_at": consent_accepted_at.isoformat(),
+            })
+        return
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE experiment_sessions
+                SET gender = %s, consent_version = %s, consent_accepted_at = %s
+                WHERE session_id = %s
+                """,
+                (gender, consent_version, consent_accepted_at, session_id),
             )
         conn.commit()
 
@@ -530,7 +626,7 @@ def _normalize_session(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
     normalized = dict(row)
-    for field in ("created_at", "last_seen_at", "completed_at", "pwf_completed_at"):
+    for field in ("created_at", "last_seen_at", "completed_at", "pwf_completed_at", "consent_accepted_at"):
         value = normalized.get(field)
         if isinstance(value, datetime):
             normalized[field] = value.isoformat()
@@ -553,6 +649,9 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
+                    consent_version,
+                    consent_accepted_at,
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
@@ -598,6 +697,7 @@ def find_completed_submission(student_id: str, study_mode: str) -> dict[str, Any
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
@@ -645,6 +745,7 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
@@ -759,7 +860,12 @@ def mark_pwf_completed(session_id: str) -> None:
 
 
 def save_ci_result(record: dict[str, Any]) -> None:
-    record = {**record, "student_id_hash": hash_student_id(record["student_id"])}
+    record = {
+        **record,
+        "student_id_hash": hash_student_id(record["student_id"]),
+        "payment_details": {},
+        "trial_payment_total": 0,
+    }
     timestamp = datetime.now(timezone.utc)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         memory_record = {**record, "Timestamp": timestamp.isoformat()}
@@ -784,7 +890,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
             cur.execute(
                 """
                 INSERT INTO ci_results (
-                    session_id, student_id, student_id_hash, name, study_mode, experiment_mode, time_pressure_seconds,
+                    session_id, student_id, student_id_hash, name, gender, study_mode, experiment_mode, time_pressure_seconds,
                     trial, block, n, student_id_last_digit, amount_level, amount_multiplier,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
@@ -793,7 +899,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     payment_details, trial_payment_total, timestamp
                 )
                 VALUES (
-                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s,
+                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(gender)s, %(study_mode)s,
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(trial)s, %(block)s, %(N)s,
                     %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
@@ -807,6 +913,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     student_id = EXCLUDED.student_id,
                     student_id_hash = EXCLUDED.student_id_hash,
                     name = EXCLUDED.name,
+                    gender = EXCLUDED.gender,
                     study_mode = EXCLUDED.study_mode,
                     experiment_mode = EXCLUDED.experiment_mode,
                     time_pressure_seconds = EXCLUDED.time_pressure_seconds,
@@ -839,6 +946,104 @@ def save_ci_result(record: dict[str, Any]) -> None:
             )
         conn.commit()
     touch_session(record["session_id"], "in_progress")
+
+
+def _canonical_mirror_choice(choice: str) -> str:
+    if choice == "X":
+        return "Y"
+    if choice == "Y":
+        return "X"
+    return choice
+
+
+def save_ci_mirror_result(record: dict[str, Any]) -> dict[str, Any]:
+    timestamp = datetime.now(timezone.utc)
+    mirror_choice = record["mirror_choice"]
+    mirror_record = {
+        "session_id": record["session_id"],
+        "trial": record["trial"],
+        "mirror_order": record["mirror_order"],
+        "mirror_left_option": "Y",
+        "mirror_right_option": "X",
+        "mirror_choice": mirror_choice,
+        "mirror_canonical_choice": _canonical_mirror_choice(mirror_choice),
+        "mirror_ci_satisfied": not record.get("mirror_timed_out", False) and mirror_choice == "Indifferent",
+        "mirror_response_time_ms": record.get("mirror_response_time_ms"),
+        "mirror_timed_out": bool(record.get("mirror_timed_out", False)),
+        "mirror_timestamp": timestamp,
+    }
+
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        existing = next(
+            (
+                item
+                for item in _memory_ci_results
+                if item.get("session_id") == record["session_id"]
+                and int(item.get("trial", -1)) == int(record["trial"])
+            ),
+            None,
+        )
+        if existing is None:
+            raise StorageError("Original CI result was not found for this mirror response")
+        duplicate_order = next(
+            (
+                item
+                for item in _memory_ci_results
+                if item.get("session_id") == record["session_id"]
+                and int(item.get("trial", -1)) != int(record["trial"])
+                and item.get("mirror_order") == record["mirror_order"]
+            ),
+            None,
+        )
+        if duplicate_order is not None:
+            raise StorageError("This mirror order is already assigned to another CI trial")
+        existing.update({**mirror_record, "mirror_timestamp": timestamp.isoformat()})
+        touch_session(record["session_id"], "in_progress")
+        return dict(existing)
+
+    ensure_schema()
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ci_results
+                    SET
+                        mirror_order = %(mirror_order)s,
+                        mirror_left_option = %(mirror_left_option)s,
+                        mirror_right_option = %(mirror_right_option)s,
+                        mirror_choice = %(mirror_choice)s,
+                        mirror_canonical_choice = %(mirror_canonical_choice)s,
+                        mirror_ci_satisfied = %(mirror_ci_satisfied)s,
+                        mirror_response_time_ms = %(mirror_response_time_ms)s,
+                        mirror_timed_out = %(mirror_timed_out)s,
+                        mirror_timestamp = %(mirror_timestamp)s
+                    WHERE session_id = %(session_id)s AND trial = %(trial)s
+                    RETURNING
+                        mirror_order,
+                        mirror_left_option,
+                        mirror_right_option,
+                        mirror_choice,
+                        mirror_canonical_choice,
+                        mirror_ci_satisfied,
+                        mirror_response_time_ms,
+                        mirror_timed_out,
+                        mirror_timestamp
+                    """,
+                    mirror_record,
+                )
+                saved = cur.fetchone()
+                if saved is None:
+                    raise StorageError("Original CI result was not found for this mirror response")
+            conn.commit()
+    except psycopg.errors.UniqueViolation as exc:
+        raise StorageError("This mirror order is already assigned to another CI trial") from exc
+
+    touch_session(record["session_id"], "in_progress")
+    normalized = dict(saved)
+    if isinstance(normalized.get("mirror_timestamp"), datetime):
+        normalized["mirror_timestamp"] = normalized["mirror_timestamp"].isoformat()
+    return normalized
 
 
 def save_utility_results(records: list[dict[str, Any]]) -> None:
@@ -958,6 +1163,7 @@ def _flatten_pwf_record(record: dict[str, Any], timestamp: datetime) -> dict[str
         "student_id": record["student_id"],
         "student_id_hash": hash_student_id(record["student_id"]),
         "name": record["name"],
+        "gender": record["gender"],
         "study_mode": record.get("study_mode", "full"),
         "pwf_trial": record["pwf_trial"],
         "participant": record.get("participant") or record["student_id"],
@@ -1042,7 +1248,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                 cur.executemany(
                     """
                     INSERT INTO pwf_results (
-                        session_id, student_id, student_id_hash, name, study_mode, pwf_trial,
+                        session_id, student_id, student_id_hash, name, gender, study_mode, pwf_trial,
                         participant, assignment_group, assignment_modulus, student_id_last3,
                         student_id_last_digit, amount_level, amount_multiplier,
                         assigned_block_id, block_id, block_title, task_id, is_anchor,
@@ -1055,7 +1261,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                         response_time_ms, prompt, payload, source_timestamp, timestamp
                     )
                     VALUES (
-                        %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s, %(pwf_trial)s,
+                        %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(gender)s, %(study_mode)s, %(pwf_trial)s,
                         %(participant)s, %(assignment_group)s, %(assignment_modulus)s, %(student_id_last3)s,
                         %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
                         %(assigned_block_id)s, %(block_id)s, %(block_title)s, %(task_id)s, %(is_anchor)s,
@@ -1071,6 +1277,7 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
                         student_id = EXCLUDED.student_id,
                         student_id_hash = EXCLUDED.student_id_hash,
                         name = EXCLUDED.name,
+                        gender = EXCLUDED.gender,
                         study_mode = EXCLUDED.study_mode,
                         participant = EXCLUDED.participant,
                         assignment_group = EXCLUDED.assignment_group,
@@ -1126,9 +1333,10 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
 
 def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
-    timestamp = normalized.get("Timestamp")
-    if isinstance(timestamp, datetime):
-        normalized["Timestamp"] = timestamp.isoformat()
+    for field in ("Timestamp", "mirror_timestamp"):
+        timestamp = normalized.get(field)
+        if isinstance(timestamp, datetime):
+            normalized[field] = timestamp.isoformat()
     return normalized
 
 
@@ -1194,6 +1402,7 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
@@ -1221,6 +1430,15 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     timed_out,
                     payment_details,
                     trial_payment_total,
+                    mirror_order,
+                    mirror_left_option,
+                    mirror_right_option,
+                    mirror_choice,
+                    mirror_canonical_choice,
+                    mirror_ci_satisfied,
+                    mirror_response_time_ms,
+                    mirror_timed_out,
+                    mirror_timestamp,
                     timestamp AS "Timestamp"
                 FROM ci_results
                 WHERE session_id = %s
@@ -1253,6 +1471,7 @@ def get_pwf_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
                     study_mode,
                     pwf_trial,
                     participant,
@@ -1317,6 +1536,150 @@ def _trial_count_from_session(session: dict[str, Any]) -> int:
     return len(trials) if isinstance(trials, list) else 0
 
 
+def _ci_mirrors_complete(results: list[dict[str, Any]], expected_trials: int) -> bool:
+    if expected_trials <= 0 or len(results) != expected_trials:
+        return False
+    for row in results:
+        choice = row.get("mirror_choice")
+        timed_out = row.get("mirror_timed_out")
+        if choice is None or timed_out is None or row.get("mirror_timestamp") is None:
+            return False
+        if row.get("mirror_left_option") != "Y" or row.get("mirror_right_option") != "X":
+            return False
+        if row.get("mirror_canonical_choice") != _canonical_mirror_choice(choice):
+            return False
+        if bool(timed_out) != (choice == "Timeout"):
+            return False
+        expected_satisfied = not bool(timed_out) and choice == "Indifferent"
+        if row.get("mirror_ci_satisfied") is not expected_satisfied:
+            return False
+    try:
+        mirror_orders = sorted(int(row["mirror_order"]) for row in results)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return mirror_orders == list(range(1, expected_trials + 1))
+
+
+def _ci_option(display_option: str, canonical_option: str, probability: float, amount: float) -> dict[str, Any]:
+    return {
+        "display_option": display_option,
+        "canonical_option": canonical_option,
+        "probability": float(probability),
+        "option_amount": float(amount),
+    }
+
+
+def _ci_decision_pool(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    for result in results:
+        trial = int(result["trial"])
+        decisions.extend([
+            {
+                "trial": trial,
+                "decision": "step1",
+                "response": "Indifferent",
+                "canonical_response": "Indifferent",
+                "options": [
+                    _ci_option("A", "X", result["p"], result["x"]),
+                    _ci_option("B", "Y", result["q"], result["y"]),
+                ],
+            },
+            {
+                "trial": trial,
+                "decision": "step2",
+                "response": "Indifferent",
+                "canonical_response": "Indifferent",
+                "options": [
+                    _ci_option("A", "X", result["r"], result["x"]),
+                    _ci_option("B", "Y", result["s"], result["y"]),
+                ],
+            },
+            {
+                "trial": trial,
+                "decision": "step3",
+                "response": "Indifferent",
+                "canonical_response": "Indifferent",
+                "options": [
+                    _ci_option("A", "X", result["pN"], result["x_prime"]),
+                    _ci_option("B", "Y", result["qN"], result["y_prime"]),
+                ],
+            },
+            {
+                "trial": trial,
+                "decision": "step4",
+                "response": result["choice"],
+                "canonical_response": result["choice"],
+                "options": [
+                    _ci_option("A", "X", result["rN"], result["x_prime"]),
+                    _ci_option("B", "Y", result["sN"], result["y_prime"]),
+                ],
+            },
+            {
+                "trial": trial,
+                "decision": "mirror_step4",
+                "response": result["mirror_choice"],
+                "canonical_response": result["mirror_canonical_choice"],
+                "options": [
+                    _ci_option("A", "Y", result["sN"], result["y_prime"]),
+                    _ci_option("B", "X", result["rN"], result["x_prime"]),
+                ],
+            },
+        ])
+    return decisions
+
+
+def _resolve_ci_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    response = decision["response"]
+    options = decision["options"]
+
+    if response == "Timeout":
+        return {
+            "trial": decision["trial"],
+            "decision": decision["decision"],
+            "response": response,
+            "canonical_response": decision["canonical_response"],
+            "selected_display_option": None,
+            "selected_canonical_option": None,
+            "selection_method": "timeout_no_payment",
+            "probability": None,
+            "option_amount": None,
+            "random_draw": None,
+            "reward_amount": 0.0,
+        }
+
+    if response == "Indifferent":
+        selected = random.choice(options)
+        selection_method = (
+            "random_indifference"
+            if decision["decision"] in {"step1", "step2", "step3"}
+            else "random_indifferent_choice"
+        )
+    elif response == "X":
+        selected = options[0]
+        selection_method = "participant_choice"
+    elif response == "Y":
+        selected = options[1]
+        selection_method = "participant_choice"
+    else:
+        raise StorageError("CI decision contains an invalid response")
+
+    random_draw = random.random()
+    reward_amount = selected["option_amount"] if random_draw < selected["probability"] else 0.0
+    return {
+        "trial": decision["trial"],
+        "decision": decision["decision"],
+        "response": response,
+        "canonical_response": decision["canonical_response"],
+        "selected_display_option": selected["display_option"],
+        "selected_canonical_option": selected["canonical_option"],
+        "selection_method": selection_method,
+        "probability": selected["probability"],
+        "option_amount": selected["option_amount"],
+        "random_draw": random_draw,
+        "reward_amount": reward_amount,
+    }
+
+
 def create_ci_settlement(session_id: str) -> dict[str, Any]:
     existing = get_ci_settlement(session_id)
     if existing:
@@ -1329,10 +1692,16 @@ def create_ci_settlement(session_id: str) -> dict[str, Any]:
     expected_trials = _trial_count_from_session(session)
     results = get_ci_results_by_session(session_id)
     saved_trials = {int(row["trial"]) for row in results}
-    if expected_trials <= 0 or len(saved_trials) < expected_trials:
+    if expected_trials <= 0 or len(saved_trials) != expected_trials or len(results) != expected_trials:
         raise StorageError("CI results are not complete yet")
+    if not _ci_mirrors_complete(results, expected_trials):
+        raise StorageError("CI mirror results are not complete yet")
 
-    selected = random.choice(results)
+    decision_pool = _ci_decision_pool(results)
+    expected_decisions = expected_trials * 5
+    if len(decision_pool) != expected_decisions:
+        raise StorageError("CI decision pool is incomplete")
+    selected = _resolve_ci_decision(random.choice(decision_pool))
     settlement = {
         "session_id": session_id,
         "student_id": session["student_id"],
@@ -1340,9 +1709,9 @@ def create_ci_settlement(session_id: str) -> dict[str, Any]:
         "name": session["name"],
         "study_mode": session["study_mode"],
         "selected_trial": int(selected["trial"]),
-        "selected_trial_amount": float(selected.get("trial_payment_total") or 0),
-        "payment_rule": "random_ci_trial_sum_step_payments",
-        "selected_trial_payments": selected.get("payment_details") or {},
+        "selected_trial_amount": float(selected["reward_amount"]),
+        "payment_rule": "random_single_ci_decision",
+        "selected_trial_payments": selected,
         "settled_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1417,8 +1786,11 @@ def mark_session_completed_if_ready(session_id: str) -> bool:
     if expected_trials <= 0:
         return False
 
-    saved_trials = {int(row["trial"]) for row in get_ci_results_by_session(session_id)}
+    ci_results = get_ci_results_by_session(session_id)
+    saved_trials = {int(row["trial"]) for row in ci_results}
     if len(saved_trials) < expected_trials:
+        return False
+    if not _ci_mirrors_complete(ci_results, expected_trials):
         return False
     if not get_ci_settlement(session_id):
         return False
@@ -1475,6 +1847,7 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
                 "ci_final_selected_trial": settlement.get("selected_trial", "") if settlement else "",
                 "ci_final_payment_total": settlement.get("selected_trial_amount", "") if settlement else "",
                 "ci_final_payment_rule": settlement.get("payment_rule", "") if settlement else "",
+                "ci_final_selected_decision_details": settlement.get("selected_trial_payments", {}) if settlement else {},
                 "ci_final_settled_at": settlement.get("settled_at", "") if settlement else "",
             })
         return results
@@ -1488,6 +1861,7 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     cr.student_id,
                     cr.student_id_hash,
                     cr.name,
+                    cr.gender,
                     cr.study_mode,
                     cr.experiment_mode,
                     cr.time_pressure_seconds,
@@ -1515,10 +1889,20 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     cr.timed_out,
                     cr.payment_details,
                     cr.trial_payment_total,
+                    cr.mirror_order,
+                    cr.mirror_left_option,
+                    cr.mirror_right_option,
+                    cr.mirror_choice,
+                    cr.mirror_canonical_choice,
+                    cr.mirror_ci_satisfied,
+                    cr.mirror_response_time_ms,
+                    cr.mirror_timed_out,
+                    cr.mirror_timestamp,
                     (cs.session_id IS NOT NULL AND cr.trial = cs.selected_trial) AS ci_final_payment_selected,
                     cs.selected_trial AS ci_final_selected_trial,
                     cs.selected_trial_amount AS ci_final_payment_total,
                     cs.payment_rule AS ci_final_payment_rule,
+                    cs.selected_trial_payments AS ci_final_selected_decision_details,
                     cs.settled_at AS ci_final_settled_at,
                     cr.timestamp AS "Timestamp"
                 FROM ci_results AS cr
@@ -1603,6 +1987,7 @@ def get_pwf_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     student_id,
                     student_id_hash,
                     name,
+                    gender,
                     study_mode,
                     pwf_trial,
                     participant,

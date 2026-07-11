@@ -5,15 +5,12 @@ function formatYen(value) {
   return `${amount.toLocaleString("ja-JP")}円`;
 }
 
-function paymentRows(paymentDetails) {
-  return [1, 2, 3, 4].map((step) => {
-    const detail = paymentDetails?.[`step${step}`] || {};
-    return {
-      step,
-      selectedOption: detail.selected_option || "—",
-      rewardAmount: detail.reward_amount,
-    };
-  });
+function decisionLabel(decision) {
+  if (decision === "mirror_step4") return "くじの比較";
+  if (typeof decision === "string" && decision.startsWith("step")) {
+    return `Step ${decision.slice(4)}`;
+  }
+  return "CI decision";
 }
 
 export default function CiSettlementScreen({ settlement, loading, error, onLoad, onNext }) {
@@ -26,13 +23,13 @@ export default function CiSettlementScreen({ settlement, loading, error, onLoad,
     }
   }, [settlement, loading, onLoad]);
 
-  const rows = paymentRows(settlement?.selected_trial_payments);
+  const payment = settlement?.selected_trial_payments || null;
 
   return (
     <div className="screen settlement-screen">
       <div className="settlement-content ci-settlement-content">
         <div className="step-label">CI 最終結果</div>
-        <h2>CI module の最終総支払額</h2>
+        <h2>CI module の最終支払額</h2>
 
         {loading && <p className="saving">最終支払額を抽選しています...</p>}
         {error && (
@@ -45,21 +42,21 @@ export default function CiSettlementScreen({ settlement, loading, error, onLoad,
         {settlement && (
           <>
             <div className="settlement-total">
-              <span>抽選された CI trial の合計金額</span>
+              <span>抽選された1つの decision の獲得金額</span>
               <strong>{formatYen(settlement.selected_trial_amount)}</strong>
             </div>
             <p className="settlement-note">
-              全 CI trial の中から trial {settlement.selected_trial} をランダムに1つ選び、4つの Step の抽選結果を合計しています。
+              すべての CI decision の中から1つをランダムに選び、そのくじだけを抽選しました。
             </p>
-            <section className="ci-settlement-steps" aria-label="抽選された CI trial の各 Step の結果">
-              {rows.map((row) => (
-                <div className="ci-settlement-step" key={row.step}>
-                  <span>Step {row.step}</span>
-                  <span>選択肢{row.selectedOption}</span>
-                  <strong>{formatYen(row.rewardAmount)}</strong>
+            {payment && (
+              <section className="ci-settlement-steps" aria-label="抽選された CI decision の結果">
+                <div className="ci-settlement-step">
+                  <span>{decisionLabel(payment.decision)}</span>
+                  <span>選択肢{payment.selected_display_option || "—"}</span>
+                  <strong>{formatYen(payment.reward_amount)}</strong>
                 </div>
-              ))}
-            </section>
+              </section>
+            )}
             <button type="button" className="btn-primary" onClick={onNext}>
               PWF 最終結果へ進む
             </button>

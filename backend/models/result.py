@@ -1,11 +1,29 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Any, Optional
+from datetime import datetime
 
 
 class SessionStartRequest(BaseModel):
     student_id: str
     name: str
+    gender: str
+    consent_version: str
+    consent_accepted_at: datetime
     study_mode: str = "full"
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v: str) -> str:
+        if v not in {"male", "female"}:
+            raise ValueError("gender must be one of: male, female")
+        return v
+
+    @field_validator("consent_version")
+    @classmethod
+    def validate_consent_version(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("consent_version is required")
+        return v.strip()
 
     @field_validator("study_mode")
     @classmethod
@@ -19,6 +37,7 @@ class CiResult(BaseModel):
     session_id: str
     student_id: str
     name: str
+    gender: str
     study_mode: str = "full"
     experiment_mode: str = "normal"
     time_pressure_seconds: int = 0
@@ -46,6 +65,13 @@ class CiResult(BaseModel):
     timed_out: bool = False
     payment_details: dict[str, dict[str, Any]] = Field(default_factory=dict)
     trial_payment_total: float = 0
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v: str) -> str:
+        if v not in {"male", "female"}:
+            raise ValueError("gender must be one of: male, female")
+        return v
 
     @field_validator("experiment_mode")
     @classmethod
@@ -127,6 +153,42 @@ class CiResult(BaseModel):
         if self.pN < self.qN and self.y_prime > self.x_prime:
             raise ValueError(f"Step 3 invalid: probability {self.qN:.3f} is higher than {self.pN:.3f}, so y_prime cannot be higher than {self.x_prime}")
 
+        return self
+
+
+class CiMirrorResult(BaseModel):
+    session_id: str
+    trial: int
+    mirror_order: int
+    mirror_choice: str  # Raw screen choice: "X" (left/A) / "Indifferent" / "Y" (right/B) / "Timeout"
+    mirror_response_time_ms: Optional[int] = None
+    mirror_timed_out: bool = False
+
+    @field_validator("trial", "mirror_order")
+    @classmethod
+    def validate_positive_ints(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("trial and mirror_order must be positive")
+        return v
+
+    @field_validator("mirror_choice")
+    @classmethod
+    def validate_mirror_choice(cls, v: str) -> str:
+        if v not in {"X", "Indifferent", "Y", "Timeout"}:
+            raise ValueError("mirror_choice must be one of: X, Indifferent, Y, Timeout")
+        return v
+
+    @field_validator("mirror_response_time_ms")
+    @classmethod
+    def validate_mirror_response_time_ms(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError("mirror_response_time_ms must be 0 or greater")
+        return v
+
+    @model_validator(mode="after")
+    def validate_timeout_consistency(self):
+        if self.mirror_timed_out != (self.mirror_choice == "Timeout"):
+            raise ValueError("mirror_timed_out must be true exactly when mirror_choice is Timeout")
         return self
 
 
