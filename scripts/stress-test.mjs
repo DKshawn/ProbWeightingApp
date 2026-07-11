@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:5174";
@@ -237,6 +238,7 @@ async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
         consent_version: "stress-test-v1",
         consent_accepted_at: new Date().toISOString(),
         study_mode: studyMode,
+        pwf_comprehension_version: "2026-07-11-comprehension-v2",
       }),
     },
     timeoutMs,
@@ -382,6 +384,46 @@ async function completePwf(baseUrl, session, timeoutMs) {
   );
 }
 
+async function saveComprehensionPass(baseUrl, session, timeoutMs) {
+  return requestJson(
+    baseUrl,
+    "/api/pwf-comprehension-events",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        events: [{
+          event_id: randomUUID(),
+          session_id: session.sessionId,
+          question_set_version: "2026-07-11-comprehension-v2",
+          sequence: 1,
+          event_type: "submission",
+          outcome: "passed",
+          round_number: 1,
+          attempt_number: 1,
+          attempt_in_round: 1,
+          attempt_limit: 3,
+          attempts_before: 3,
+          attempts_after: 2,
+          answers: {
+            probability_meaning: "b",
+            lottery_tradeoff: "d",
+            standard_answer: "no",
+            indifference_input: "c",
+            serious_answers: "yes",
+            indifferent_payment: "d",
+          },
+          incorrect_question_ids: [],
+          correct_count: 6,
+          passed: true,
+          locked_after: false,
+          source_timestamp: new Date().toISOString(),
+        }],
+      }),
+    },
+    timeoutMs,
+  );
+}
+
 function buildCiResult(session, trial, trialIndex, choice = "Indifferent") {
   const n = Number(trial.N);
   const pN = Number((trial.p ** n).toFixed(10));
@@ -472,19 +514,31 @@ async function createCiSettlement(baseUrl, session, timeoutMs) {
 }
 
 async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, timeoutMs) {
-  const [ciCsv, pwfCsv] = await Promise.all([
+  const [ciCsv, pwfCsv, comprehensionCsv] = await Promise.all([
     requestText(baseUrl, `/api/ci-results/${encodeURIComponent(session.studentId)}/csv`, {}, timeoutMs),
     requestText(baseUrl, `/api/pwf-results/${encodeURIComponent(session.studentId)}/csv`, {}, timeoutMs),
+    requestText(baseUrl, `/api/pwf-comprehension-events/${encodeURIComponent(session.studentId)}/csv`, {}, timeoutMs),
   ]);
   const ciRows = countCsvRows(ciCsv);
   const pwfRows = countCsvRows(pwfCsv);
+  const comprehensionRows = countCsvRows(comprehensionCsv);
   if (ciRows !== expectedCiRows) {
     throw new Error(`CI CSV row count ${ciRows}, expected ${expectedCiRows}`);
   }
   if (pwfRows !== expectedPwfRows) {
     throw new Error(`PWF CSV row count ${pwfRows}, expected ${expectedPwfRows}`);
   }
-  return { ciRows, pwfRows, ciBytes: ciCsv.length, pwfBytes: pwfCsv.length };
+  if (comprehensionRows !== 1) {
+    throw new Error(`Comprehension CSV row count ${comprehensionRows}, expected 1`);
+  }
+  return {
+    ciRows,
+    pwfRows,
+    comprehensionRows,
+    ciBytes: ciCsv.length,
+    pwfBytes: pwfCsv.length,
+    comprehensionBytes: comprehensionCsv.length,
+  };
 }
 
 function countCsvRows(csvText) {
@@ -562,6 +616,7 @@ async function main() {
       for (let i = 0; i < assignment.block.tasks.length; i += 1) {
         await savePwfRecord(options.baseUrl, session, assignment, assignment.block.tasks[i], i, options.timeoutMs);
       }
+      await saveComprehensionPass(options.baseUrl, session, options.timeoutMs);
       await completePwf(options.baseUrl, session, options.timeoutMs);
       const trialsBeforeFinal = session.trials.slice(0, -1);
       for (let i = 0; i < trialsBeforeFinal.length; i += 1) {
@@ -599,7 +654,7 @@ async function main() {
   let downloadResults = [];
   if (!options.skipDownloads) {
     const completedForDownload = readyFinishers.filter((_, index) => finalResults[index]?.ok);
-    console.log(`Phase 4: downloading CI/PWF CSV for ${completedForDownload.length} participants concurrently`);
+    console.log(`Phase 4: downloading CI/PWF/comprehension CSV for ${completedForDownload.length} participants concurrently`);
     downloadResults = await Promise.all(completedForDownload.map(({ session, assignment }) => timed(
       `csv:${session.studentId}`,
       () => downloadCsvs(options.baseUrl, session, assignment.block.tasks.length, session.trials.length, options.timeoutMs),
@@ -617,7 +672,7 @@ async function main() {
   const expectedApiWrites =
     options.startCount +
     prepResults.filter((result) => result.ok).reduce((sum, result) => (
-      sum + result.value.pwfRows + 1 + result.value.ciPreparedRows
+      sum + result.value.pwfRows + 2 + result.value.ciPreparedRows
     ), 0) +
     finalResults.filter((result) => result.ok).reduce((sum, result) => (
       sum + result.value.finalCiRows + result.value.mirrorRows + result.value.settlementWrites

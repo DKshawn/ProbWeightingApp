@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getCiCsvUrl, getPwfCsvUrl } from "../api/client";
+import { getCiCsvUrl, getPwfComprehensionCsvUrl, getPwfCsvUrl } from "../api/client";
 
 const crc32Table = Array.from({ length: 256 }, (_, index) => {
   let crc = index;
@@ -9,11 +9,12 @@ const crc32Table = Array.from({ length: 256 }, (_, index) => {
   return crc >>> 0;
 });
 
-export default function FinishScreen({ studentId }) {
+export default function FinishScreen({ studentId, includePwfComprehension = true }) {
   const [saving, setSaving] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const ciCsvUrl = getCiCsvUrl(studentId);
   const pwfCsvUrl = getPwfCsvUrl(studentId);
+  const pwfComprehensionCsvUrl = getPwfComprehensionCsvUrl(studentId);
 
   function buildTimestamp() {
     const now = new Date();
@@ -49,6 +50,10 @@ export default function FinishScreen({ studentId }) {
         url: pwfCsvUrl,
         name: `PWF_${studentId}_${timestamp}.csv`,
       },
+      ...(includePwfComprehension ? [{
+        url: pwfComprehensionCsvUrl,
+        name: `PWF_Comprehension_${studentId}_${timestamp}.csv`,
+      }] : []),
     ];
 
     const blobs = await Promise.all(files.map((file) => fetchCsv(file.url)));

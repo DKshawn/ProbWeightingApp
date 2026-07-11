@@ -199,6 +199,12 @@ def fetch_export_rows(
             "JOIN experiment_sessions AS s ON s.session_id = r.session_id"
             f"{session_filter} ORDER BY r.timestamp, r.session_id, r.pwf_trial"
         )
+    elif table == "pwf_comprehension_events":
+        query = (
+            "SELECT r.* FROM pwf_comprehension_events AS r "
+            "JOIN experiment_sessions AS s ON s.session_id = r.session_id"
+            f"{session_filter} ORDER BY r.timestamp, r.session_id, r.sequence"
+        )
     else:
         raise ValueError(f"Unsupported export table: {table}")
 
@@ -292,6 +298,7 @@ def command_export(args: argparse.Namespace) -> None:
             ("sessions", "experiment_sessions.csv"),
             ("ci_results", "ci_results.csv"),
             ("pwf_results", "pwf_results.csv"),
+            ("pwf_comprehension_events", "pwf_comprehension_events.csv"),
         ):
             rows, columns = fetch_export_rows(
                 cur,
@@ -371,10 +378,10 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--completed-only", action="store_true")
     show.set_defaults(handler=command_show)
 
-    export = subparsers.add_parser("export", help="Export sessions, CI results, and PWF results as CSV files.")
+    export = subparsers.add_parser("export", help="Export sessions, CI, PWF, and comprehension records as CSV files.")
     export.add_argument("--ids", dest="student_ids", nargs="+", help="Limit export to student IDs.")
     export.add_argument("--completed-only", action="store_true", help="Only export completed sessions.")
-    export.add_argument("--out", type=Path, required=True, help="Output directory for the three CSV files.")
+    export.add_argument("--out", type=Path, required=True, help="Output directory for the four CSV files.")
     export.set_defaults(handler=command_export)
 
     sql_parser = subparsers.add_parser("sql", help="Run one read-only SQL query locally.")

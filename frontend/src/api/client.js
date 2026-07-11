@@ -1,4 +1,16 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const PWF_COMPREHENSION_VERSION = "2026-07-11-comprehension-v2";
+const SAVE_TIMEOUT_MS = 10000;
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), SAVE_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
 
 function formatApiError(errorBody, fallbackMessage) {
   const detail = errorBody?.detail;
@@ -38,6 +50,7 @@ export async function startSession(studentId, name, studyMode = "full", enrollme
       gender: enrollment.gender,
       consent_version: enrollment.consentVersion,
       consent_accepted_at: enrollment.consentAcceptedAt,
+      pwf_comprehension_version: PWF_COMPREHENSION_VERSION,
     }),
   });
   if (!res.ok) {
@@ -85,9 +98,17 @@ export async function createCiSettlement(sessionId) {
 }
 
 export async function completePwfSession(sessionId) {
-  const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/pwf-complete`, {
-    method: "POST",
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/pwf-complete`, {
+      method: "POST",
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("PWF 完了状態の保存がタイムアウトしました");
+    }
+    throw error;
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(formatApiError(err, "PWF 完了状態の保存に失敗しました"));
@@ -121,6 +142,27 @@ export async function savePwfResults(results) {
   return res.json();
 }
 
+export async function savePwfComprehensionEvents(events) {
+  let res;
+  try {
+    res = await fetchWithTimeout(`${BASE_URL}/api/pwf-comprehension-events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ events }),
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("理解度確認の記録保存がタイムアウトしました");
+    }
+    throw error;
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(err, "理解度確認の記録保存に失敗しました"));
+  }
+  return res.json();
+}
+
 export function getCiCsvUrl(studentId) {
   return `${BASE_URL}/api/ci-results/${encodeURIComponent(studentId)}/csv`;
 }
@@ -131,4 +173,8 @@ export function getUtilityCsvUrl(studentId) {
 
 export function getPwfCsvUrl(studentId) {
   return `${BASE_URL}/api/pwf-results/${encodeURIComponent(studentId)}/csv`;
+}
+
+export function getPwfComprehensionCsvUrl(studentId) {
+  return `${BASE_URL}/api/pwf-comprehension-events/${encodeURIComponent(studentId)}/csv`;
 }

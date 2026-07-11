@@ -1,9 +1,6 @@
 import { useState } from "react";
 import ProgressBar from "./ProgressBar";
-
-function formatPercentage(probability) {
-  return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
-}
+import { formatCiProbability } from "../utils/formatCiProbability";
 
 export default function Step3Screen({ trial, trialIndex, totalTrials, onNext }) {
   const [yPrime, setYPrime] = useState("");
@@ -12,8 +9,8 @@ export default function Step3Screen({ trial, trialIndex, totalTrials, onNext }) 
   const { p, q, x_prime, N, block } = trial;
   const pNValue = p ** N;
   const qNValue = q ** N;
-  const pN = formatPercentage(pNValue);
-  const qN = formatPercentage(qNValue);
+  const pN = formatCiProbability(pNValue);
+  const qN = formatCiProbability(qNValue);
   const trialNum = trialIndex + 1;
 
   function handleSubmit(e) {

@@ -4,6 +4,7 @@ import {
   createCiSettlement,
   saveCiMirrorResult,
   saveCiResult,
+  savePwfComprehensionEvents,
   savePwfResults,
   startSession,
 } from "../api/client";
@@ -93,11 +94,12 @@ export function useSession() {
   const [studentId, setStudentId] = useState("");
   const [name, setName] = useState("");
   const [gender, setGender] = useState("");
-  const [consentVersion, setConsentVersion] = useState("");
-  const [consentAcceptedAt, setConsentAcceptedAt] = useState("");
+  const [_consentVersion, setConsentVersion] = useState("");
+  const [_consentAcceptedAt, setConsentAcceptedAt] = useState("");
   const [studyMode, setStudyMode] = useState(getStudyModeFromUrl());
   const [experimentMode, setExperimentMode] = useState("normal");
   const [timePressureSeconds, setTimePressureSeconds] = useState(0);
+  const [pwfComprehensionRequired, setPwfComprehensionRequired] = useState(false);
   const [pwfRecords, setPwfRecords] = useState([]);
   const [ciRecords, setCiRecords] = useState([]);
   const [trials, setTrials] = useState([]);
@@ -114,6 +116,9 @@ export function useSession() {
   const pwfSessionPromiseRef = useRef(null);
   const pwfSaveQueueRef = useRef(Promise.resolve());
   const pwfSaveFailedRef = useRef(false);
+  const comprehensionSaveQueueRef = useRef(Promise.resolve());
+  const comprehensionSaveFailedRef = useRef(false);
+  const comprehensionSaveErrorRef = useRef(null);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
   const currentMirrorTrialIndex = mirrorTrialOrder[currentMirrorOrderIndex] ?? null;
@@ -169,6 +174,9 @@ export function useSession() {
 
     pwfSaveQueueRef.current = Promise.resolve();
     pwfSaveFailedRef.current = false;
+    comprehensionSaveQueueRef.current = Promise.resolve();
+    comprehensionSaveFailedRef.current = false;
+    comprehensionSaveErrorRef.current = null;
 
     const sessionName = sid;
     const promise = startSession(sid, sessionName, requestedStudyMode, enrollment)
@@ -178,7 +186,9 @@ export function useSession() {
         const savedTrialResults = data.saved_ci_results || [];
         const savedPwfResults = data.saved_pwf_results || [];
         const savedCiSettlement = data.ci_settlement || null;
-        const pwfCompleted = Boolean(data.pwf_completed) || savedTrialResults.length > 0;
+        const comprehensionRequired = Boolean(data.pwf_comprehension_required);
+        const pwfCompleted = Boolean(data.pwf_completed)
+          || (!comprehensionRequired && savedTrialResults.length > 0);
         const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
         const resolvedMirrorTrialOrder = buildMirrorTrialOrder(resolvedTrials, data.session_id);
         const resumeMirrorOrderIndex = firstUnansweredMirrorOrderIndex(
@@ -197,6 +207,7 @@ export function useSession() {
           trials: resolvedTrials,
           experimentMode: data.experiment_mode || "normal",
           timePressureSeconds: data.time_pressure_seconds || 0,
+          pwfComprehensionRequired: comprehensionRequired,
           savedTrialResults,
           savedPwfResults,
           pwfCompleted,
@@ -215,6 +226,7 @@ export function useSession() {
         setStudyMode(session.studyMode);
         setExperimentMode(session.experimentMode);
         setTimePressureSeconds(session.timePressureSeconds);
+        setPwfComprehensionRequired(session.pwfComprehensionRequired);
         setPwfRecords(session.savedPwfResults);
         setCiRecords(session.savedTrialResults);
         setCiSettlement(savedCiSettlement);
@@ -278,6 +290,52 @@ export function useSession() {
     return saveTask;
   }
 
+  function buildPwfComprehensionEvents(message, session) {
+    const events = message?.events;
+    if (!Array.isArray(events) || events.length === 0) {
+      throw new Error("理解度確認の記録を取得できませんでした");
+    }
+    return events.map((event) => ({
+      ...event,
+      session_id: session.sessionId,
+    }));
+  }
+
+  async function saveComprehensionEventsWithRetry(events, maxAttempts = 3) {
+    let lastError = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        return await savePwfComprehensionEvents(events);
+      } catch (error) {
+        lastError = error;
+        if (attempt + 1 < maxAttempts) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250 * (2 ** attempt)));
+        }
+      }
+    }
+    throw lastError || new Error("理解度確認の記録保存に失敗しました");
+  }
+
+  function enqueuePwfComprehensionSave(message) {
+    const saveTask = comprehensionSaveQueueRef.current.then(async () => {
+      try {
+        const session = await ensurePwfSession(message);
+        const events = buildPwfComprehensionEvents(message, session);
+        const response = await saveComprehensionEventsWithRetry(events);
+        comprehensionSaveFailedRef.current = false;
+        comprehensionSaveErrorRef.current = null;
+        return response;
+      } catch (error) {
+        comprehensionSaveFailedRef.current = true;
+        comprehensionSaveErrorRef.current = error;
+        throw error;
+      }
+    });
+
+    comprehensionSaveQueueRef.current = saveTask.catch(() => {});
+    return saveTask;
+  }
+
   async function handlePwfStart(message) {
     beginOperation();
     setError(null);
@@ -303,14 +361,29 @@ export function useSession() {
     }
   }
 
+  async function handlePwfComprehensionEvents(message) {
+    return enqueuePwfComprehensionSave(message);
+  }
+
   async function handlePwfComplete(message) {
     beginOperation();
     setError(null);
     try {
       const session = await ensurePwfSession(message);
       await pwfSaveQueueRef.current;
+      if (Array.isArray(message?.comprehension_events) && message.comprehension_events.length > 0) {
+        await enqueuePwfComprehensionSave({
+          ...message,
+          events: message.comprehension_events,
+        });
+      } else {
+        await comprehensionSaveQueueRef.current;
+      }
       if (pwfSaveFailedRef.current) {
         throw new Error("PWF 結果の保存に失敗しました");
+      }
+      if (comprehensionSaveFailedRef.current) {
+        throw comprehensionSaveErrorRef.current || new Error("理解度確認の記録保存に失敗しました");
       }
       await completePwfSession(session.sessionId);
       session.pwfCompleted = true;
@@ -325,8 +398,10 @@ export function useSession() {
         session.resumeMirrorOrderIndex,
         null,
       ));
+      return true;
     } catch (e) {
       setError(e.message);
+      return false;
     } finally {
       endOperation();
     }
@@ -512,10 +587,12 @@ export function useSession() {
     currentMirrorRecord,
     stepData,
     ciSettlement,
+    pwfComprehensionRequired,
     loading,
     error,
     handlePwfStart,
     handlePwfRecord,
+    handlePwfComprehensionEvents,
     handlePwfComplete,
     submitStep1,
     submitStep2,

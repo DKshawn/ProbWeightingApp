@@ -1,11 +1,5 @@
 import ProgressBar from "./ProgressBar";
-
-function formatProbability(probability) {
-  const percent = Number(probability) * 100;
-  if (!Number.isFinite(percent)) return "—";
-  const rounded = Math.round(percent * 100) / 100;
-  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)}%`;
-}
+import { formatCiProbability } from "../utils/formatCiProbability";
 
 export default function StepFeedbackScreen({ trial, trialIndex, totalTrials, feedback, onNext }) {
   const trialNum = trialIndex + 1;
@@ -43,7 +37,7 @@ export default function StepFeedbackScreen({ trial, trialIndex, totalTrials, fee
             return (
               <div key={option.label} className={`lottery-box ci-feedback-option ${selected ? "selected" : "muted"}`}>
                 <div className="lottery-label">選択肢{option.label}</div>
-                <div className="lottery-detail">確率 <strong>{formatProbability(option.probability)}</strong> で</div>
+                <div className="lottery-detail">確率 <strong>{formatCiProbability(option.probability)}</strong> で</div>
                 <div className="lottery-amount">{option.amount.toLocaleString("ja-JP")}円</div>
                 {selected && <span className="ci-feedback-selected">{selectedBadge}</span>}
               </div>

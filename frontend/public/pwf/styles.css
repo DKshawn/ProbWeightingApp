@@ -865,6 +865,518 @@ button, input {
 .practice-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 12px;
+}
+
+.practice-hub-screen {
+  gap: 0;
+}
+
+.practice-tabs {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 12px;
+}
+
+.practice-tab {
+  min-height: 48px;
+  padding: 11px 20px;
+  border: 1px solid #cbd5e1;
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  background: #e9eef5;
+  color: #475569;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.practice-tab:hover {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.practice-tab:focus-visible {
+  outline: 3px solid rgba(58, 134, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.practice-tab.active {
+  min-height: 54px;
+  margin-bottom: -1px;
+  border-color: #b8c4d4;
+  background: #fff;
+  color: #1e3a8a;
+}
+
+.practice-tab-status {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+#practiceWindowPanel,
+.comprehension-window,
+.practice-summary-panel {
+  padding: 22px;
+  border: 1px solid #b8c4d4;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+#practiceWindowPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.practice-progress {
+  margin-top: 2px;
+}
+
+.practice-ci-step,
+.practice-step4-display {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.practice-ci-option-list {
+  display: grid;
+  gap: 10px;
+}
+
+.practice-ci-option-list p {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+}
+
+.practice-ci-option-label {
+  flex: 0 0 auto;
+  min-width: 76px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1e3a8a;
+  font-size: 0.8rem;
+  font-weight: 900;
+  text-align: center;
+}
+
+.practice-unknown {
+  color: #dc2626;
+  font-size: 1.1rem;
+}
+
+.practice-step-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.practice-step-form .field {
+  width: min(100%, 420px);
+}
+
+.practice-lottery-amount {
+  color: #0f172a;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.practice-step4-display.compact {
+  margin: 14px 0 18px;
+  padding: 16px;
+  border: 1px solid #dbe5f1;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.practice-step4-display.compact .step-label {
+  align-self: flex-start;
+}
+
+.practice-step4-choices {
+  display: flex;
+  gap: 10px;
+}
+
+.practice-step4-choice {
+  flex: 1;
+  text-align: center;
+}
+
+.practice-step4-choice.step4-choice-left:not(.static) {
+  background: #3a86ff;
+  color: #fff;
+}
+
+.practice-step4-choice.step4-choice-indifferent:not(.static) {
+  background: #6b7280;
+  color: #fff;
+}
+
+.practice-step4-choice.step4-choice-right:not(.static) {
+  background: #ef476f;
+  color: #fff;
+}
+
+.practice-step4-choice.static {
+  cursor: default;
+  pointer-events: none;
+  background: #e2e8f0;
+  color: #64748b;
+  opacity: 0.72;
+}
+
+.practice-step4-choice.static.selected,
+.practice-step4-choice.selected {
+  opacity: 1;
+  box-shadow: inset 0 0 0 3px #fbbf24, 0 0 0 1px #92400e;
+}
+
+.practice-step4-choice.static.step4-choice-left.selected {
+  background: #3a86ff;
+  color: #fff;
+}
+
+.practice-step4-choice.static.step4-choice-indifferent.selected {
+  background: #6b7280;
+  color: #fff;
+}
+
+.practice-step4-choice.static.step4-choice-right.selected {
+  background: #ef476f;
+  color: #fff;
+}
+
+.practice-ci-option-list.feedback {
+  padding: 16px;
+  border: 1px solid #dbe5f1;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.practice-ci-payment-feedback {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid #86efac;
+  border-radius: 12px;
+  background: #f0fdf4;
+}
+
+.practice-ci-payment-feedback h4,
+.practice-ci-payment-feedback p {
+  margin: 0;
+}
+
+.practice-ci-payment-feedback h4 {
+  color: #166534;
+  font-size: 1rem;
+}
+
+.practice-ci-payment-feedback p {
+  color: #3f6212;
+  line-height: 1.55;
+}
+
+.practice-ci-payment-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.practice-ci-payment-summary > div,
+.practice-ci-payment-reward {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #bbf7d0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.practice-ci-payment-summary span,
+.practice-ci-payment-reward span {
+  color: #4b5563;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.practice-ci-payment-summary strong {
+  color: #14532d;
+}
+
+.practice-ci-payment-summary small {
+  color: #166534;
+  font-weight: 800;
+}
+
+.practice-ci-payment-reward {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.practice-ci-payment-reward strong {
+  color: #166534;
+  font-size: 1.35rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.practice-summary-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.practice-summary-panel p,
+.comprehension-intro {
+  color: #475569;
+  line-height: 1.65;
+}
+
+.comprehension-window {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.comprehension-form,
+.comprehension-question-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.comprehension-form {
+  gap: 20px;
+}
+
+.comprehension-question-list {
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.comprehension-question {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.comprehension-question:focus {
+  border-color: #3a86ff;
+  box-shadow: 0 0 0 3px rgba(58, 134, 255, 0.14);
+  outline: none;
+}
+
+.comprehension-question legend {
+  width: 100%;
+  padding: 0 4px;
+  color: #172033;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.6;
+}
+
+.comprehension-question-number {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  margin-right: 9px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  background: #e0ecff;
+  color: #1e40af;
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+.comprehension-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.comprehension-option {
+  width: 100%;
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.comprehension-option span {
+  min-width: 0;
+}
+
+.comprehension-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
+.comprehension-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding: 16px;
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 -5px 18px rgba(15, 23, 42, 0.07);
+}
+
+.comprehension-attempts {
+  color: #334155;
+  font-size: 0.92rem;
+}
+
+.comprehension-status,
+.comprehension-help {
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+.comprehension-status:empty {
+  display: none;
+}
+
+.comprehension-status.error {
+  padding: 10px 14px;
+}
+
+.comprehension-status.success,
+.comprehension-status.info {
+  padding: 10px 14px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.comprehension-status.success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.comprehension-status.info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1e40af;
+}
+
+.comprehension-help {
+  color: #92400e;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.comprehension-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.comprehension-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.58);
+}
+
+.comprehension-modal {
+  width: min(500px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding: 26px;
+  border: 1px solid #d6deea;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.comprehension-modal h2 {
+  margin-top: 8px;
+}
+
+.comprehension-modal p {
+  margin-top: 12px;
+  color: #475569;
+  line-height: 1.65;
+}
+
+.comprehension-modal-actions {
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
+.comprehension-lock-dialog {
+  border-top: 6px solid #dc2626;
+}
+
+.comprehension-unlock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.comprehension-unlock-form label {
+  color: #334155;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.comprehension-unlock-form input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.comprehension-unlock-form input:focus {
+  border-color: #3a86ff;
+  box-shadow: 0 0 0 3px rgba(58, 134, 255, 0.15);
+  outline: none;
+}
+
+.comprehension-unlock-error:empty {
+  display: none;
+}
+
+.comprehension-unlock-form .btn-primary {
+  align-self: flex-end;
 }
 
 .feedback-card {
@@ -1274,6 +1786,8 @@ button, input {
 .feedback-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .practice-feedback-card {
@@ -1395,6 +1909,10 @@ button, input {
   .feedback-bisection-options {
     flex-direction: column;
   }
+
+  .comprehension-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 560px) {
@@ -1440,5 +1958,57 @@ button, input {
   .memory-digit-input {
     height: 50px;
     font-size: 1.45rem;
+  }
+
+  .practice-tabs {
+    gap: 4px;
+    padding: 0 4px;
+  }
+
+  .practice-tab {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 8px;
+    font-size: 0.9rem;
+  }
+
+  #practiceWindowPanel,
+  .comprehension-window,
+  .practice-summary-panel {
+    padding: 16px 12px;
+  }
+
+  .practice-actions,
+  .practice-step4-choices,
+  .feedback-actions,
+  .comprehension-actions,
+  .comprehension-modal-actions {
+    flex-direction: column;
+  }
+
+  .practice-ci-option-list p {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .practice-ci-payment-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .comprehension-question {
+    padding: 14px 10px;
+  }
+
+  .comprehension-footer {
+    padding: 12px;
+  }
+
+  .comprehension-modal {
+    padding: 22px 18px;
+  }
+
+  .comprehension-unlock-form .btn-primary {
+    align-self: stretch;
   }
 }

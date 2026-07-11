@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ProgressBar from "./ProgressBar";
-
-function formatPercentage(probability) {
-  return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
-}
+import { formatCiProbability } from "../utils/formatCiProbability";
 
 export default function Step4Screen({
   trial,
@@ -16,8 +13,8 @@ export default function Step4Screen({
 }) {
   const { r, x_prime, N, block } = trial;
   const { s, y_prime } = stepData;
-  const rN = formatPercentage(r ** N);
-  const sN = formatPercentage(s ** N);
+  const rN = formatCiProbability(r ** N);
+  const sN = formatCiProbability(s ** N);
   const trialNum = trialIndex + 1;
   const [isFinished, setIsFinished] = useState(false);
   const startTimeRef = useRef(null);

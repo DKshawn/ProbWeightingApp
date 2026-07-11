@@ -23,10 +23,12 @@ export default function App() {
     currentMirrorRecord,
     stepData,
     ciSettlement,
+    pwfComprehensionRequired,
     loading,
     error,
     handlePwfStart,
     handlePwfRecord,
+    handlePwfComprehensionEvents,
     handlePwfComplete,
     submitStep1,
     submitStep2,
@@ -47,6 +49,7 @@ export default function App() {
         <PwfFrame
           onStart={handlePwfStart}
           onRecord={handlePwfRecord}
+          onComprehensionEvents={handlePwfComprehensionEvents}
           onComplete={handlePwfComplete}
           loading={loading}
           error={error}
@@ -105,7 +108,12 @@ export default function App() {
         <div className="screen"><p className="saving">読み込み中...</p></div>
       );
     case 5:
-      return <FinishScreen studentId={studentId} />;
+      return (
+        <FinishScreen
+          studentId={studentId}
+          includePwfComprehension={pwfComprehensionRequired}
+        />
+      );
     case 6:
       return <BlockBreakScreen nextTrial={currentTrial} onContinue={startNextBlock} />;
     case 7:

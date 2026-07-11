@@ -27,6 +27,7 @@ _memory_ci_results: list[dict[str, Any]] = []
 _memory_ci_settlements: dict[str, dict[str, Any]] = {}
 _memory_utility_results: list[dict[str, Any]] = []
 _memory_pwf_results: list[dict[str, Any]] = []
+_memory_pwf_comprehension_events: list[dict[str, Any]] = []
 
 
 class StorageError(RuntimeError):
@@ -73,7 +74,7 @@ def _database_schema_ready(cur) -> bool:
         "experiment_sessions": {
             "session_id", "student_id", "student_id_hash", "name", "gender", "consent_version", "consent_accepted_at", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trials", "status", "pwf_completed",
-            "pwf_completed_at", "completed_at", "last_seen_at", "created_at",
+            "pwf_completed_at", "pwf_comprehension_version", "completed_at", "last_seen_at", "created_at",
         },
         "ci_results": {
             "session_id", "student_id", "student_id_hash", "name", "gender", "study_mode", "experiment_mode",
@@ -111,6 +112,13 @@ def _database_schema_ready(cur) -> bool:
             "response_type", "estimate", "switch_lower", "switch_upper",
             "switch_row", "switch_direction", "switch_status", "monotonic",
             "response_time_ms", "prompt", "payload", "source_timestamp", "timestamp",
+        },
+        "pwf_comprehension_events": {
+            "event_id", "session_id", "question_set_version", "sequence",
+            "event_type", "outcome", "round_number", "attempt_number",
+            "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+            "answers", "incorrect_question_ids", "correct_count", "passed",
+            "locked_after", "source_timestamp", "timestamp",
         },
     }
     cur.execute(
@@ -198,6 +206,7 @@ def ensure_schema() -> None:
                     status TEXT NOT NULL DEFAULT 'started',
                     pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
                     pwf_completed_at TIMESTAMPTZ,
+                    pwf_comprehension_version TEXT,
                     completed_at TIMESTAMPTZ,
                     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -348,6 +357,28 @@ def ensure_schema() -> None:
                     UNIQUE (session_id, pwf_trial)
                 );
 
+                CREATE TABLE IF NOT EXISTS pwf_comprehension_events (
+                    event_id UUID PRIMARY KEY,
+                    session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
+                    question_set_version TEXT NOT NULL,
+                    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+                    event_type TEXT NOT NULL CHECK (event_type IN ('submission', 'unlock')),
+                    outcome TEXT NOT NULL CHECK (outcome IN ('failed', 'locked', 'passed', 'unlocked')),
+                    round_number INTEGER NOT NULL CHECK (round_number >= 1),
+                    attempt_number INTEGER CHECK (attempt_number IS NULL OR attempt_number >= 1),
+                    attempt_in_round INTEGER CHECK (attempt_in_round IS NULL OR attempt_in_round >= 1),
+                    attempt_limit INTEGER NOT NULL CHECK (attempt_limit BETWEEN 1 AND 3),
+                    attempts_before INTEGER NOT NULL CHECK (attempts_before BETWEEN 0 AND 3),
+                    attempts_after INTEGER NOT NULL CHECK (attempts_after BETWEEN 0 AND 3),
+                    answers JSONB NOT NULL,
+                    incorrect_question_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    correct_count INTEGER NOT NULL CHECK (correct_count BETWEEN 0 AND 6),
+                    passed BOOLEAN NOT NULL,
+                    locked_after BOOLEAN NOT NULL,
+                    source_timestamp TIMESTAMPTZ NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
                 ALTER TABLE experiment_sessions
                     ADD COLUMN IF NOT EXISTS student_id_hash TEXT,
                     ADD COLUMN IF NOT EXISTS gender TEXT,
@@ -359,6 +390,7 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'started',
                     ADD COLUMN IF NOT EXISTS pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS pwf_completed_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS pwf_comprehension_version TEXT,
                     ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
                     ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
@@ -498,6 +530,12 @@ def ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_pwf_results_block
                     ON pwf_results(block_id, task_index);
 
+                CREATE INDEX IF NOT EXISTS idx_pwf_comprehension_events_session
+                    ON pwf_comprehension_events(session_id, timestamp, sequence);
+
+                CREATE INDEX IF NOT EXISTS idx_pwf_comprehension_events_outcome
+                    ON pwf_comprehension_events(outcome, passed, locked_after);
+
                 CREATE INDEX IF NOT EXISTS idx_experiment_sessions_resume
                     ON experiment_sessions(student_id, study_mode, status, last_seen_at DESC, created_at DESC);
 
@@ -525,6 +563,7 @@ def create_session(
     study_mode: str = "full",
     experiment_mode: str = "normal",
     time_pressure_seconds: int = 0,
+    pwf_comprehension_version: str | None = None,
 ) -> None:
     student_id_hash = hash_student_id(student_id)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
@@ -543,6 +582,7 @@ def create_session(
             "status": "started",
             "pwf_completed": False,
             "pwf_completed_at": None,
+            "pwf_comprehension_version": pwf_comprehension_version,
             "completed_at": None,
             "last_seen_at": datetime.now(timezone.utc).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -556,9 +596,9 @@ def create_session(
                 """
                 INSERT INTO experiment_sessions (
                     session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
-                    study_mode, experiment_mode, time_pressure_seconds, trials
+                    study_mode, experiment_mode, time_pressure_seconds, trials, pwf_comprehension_version
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     session_id,
@@ -572,6 +612,7 @@ def create_session(
                     experiment_mode,
                     time_pressure_seconds,
                     Jsonb(trials),
+                    pwf_comprehension_version,
                 ),
             )
         conn.commit()
@@ -659,6 +700,7 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                     status,
                     pwf_completed,
                     pwf_completed_at,
+                    pwf_comprehension_version,
                     completed_at,
                     last_seen_at,
                     created_at
@@ -705,6 +747,7 @@ def find_completed_submission(student_id: str, study_mode: str) -> dict[str, Any
                     status,
                     pwf_completed,
                     pwf_completed_at,
+                    pwf_comprehension_version,
                     completed_at,
                     last_seen_at,
                     created_at
@@ -753,6 +796,7 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                     status,
                     pwf_completed,
                     pwf_completed_at,
+                    pwf_comprehension_version,
                     completed_at,
                     last_seen_at,
                     created_at
@@ -1331,12 +1375,91 @@ def save_pwf_results(records: list[dict[str, Any]]) -> None:
     _with_retry(write_records)
 
 
+def save_pwf_comprehension_events(records: list[dict[str, Any]]) -> None:
+    timestamp = datetime.now(timezone.utc)
+    normalized_records = [
+        {
+            **record,
+            "event_id": str(record["event_id"]),
+            "timestamp": timestamp,
+        }
+        for record in records
+    ]
+
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        existing_event_ids = {str(item["event_id"]) for item in _memory_pwf_comprehension_events}
+        for record in normalized_records:
+            if record["event_id"] in existing_event_ids:
+                continue
+            _memory_pwf_comprehension_events.append({
+                **record,
+                "Timestamp": timestamp.isoformat(),
+                "source_timestamp": (
+                    record["source_timestamp"].isoformat()
+                    if isinstance(record.get("source_timestamp"), datetime)
+                    else record.get("source_timestamp", "")
+                ),
+            })
+            existing_event_ids.add(record["event_id"])
+        if records:
+            touch_session(records[0]["session_id"], "in_progress")
+        return
+
+    def write_records() -> None:
+        ensure_schema()
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO pwf_comprehension_events (
+                        event_id, session_id, question_set_version, sequence,
+                        event_type, outcome, round_number, attempt_number,
+                        attempt_in_round, attempt_limit, attempts_before, attempts_after,
+                        answers, incorrect_question_ids, correct_count, passed,
+                        locked_after, source_timestamp, timestamp
+                    )
+                    VALUES (
+                        %(event_id)s, %(session_id)s, %(question_set_version)s, %(sequence)s,
+                        %(event_type)s, %(outcome)s, %(round_number)s, %(attempt_number)s,
+                        %(attempt_in_round)s, %(attempt_limit)s, %(attempts_before)s, %(attempts_after)s,
+                        %(answers)s, %(incorrect_question_ids)s, %(correct_count)s, %(passed)s,
+                        %(locked_after)s, %(source_timestamp)s, %(timestamp)s
+                    )
+                    ON CONFLICT (event_id) DO NOTHING
+                    """,
+                    [
+                        {
+                            **record,
+                            "answers": Jsonb(record["answers"]),
+                            "incorrect_question_ids": Jsonb(record["incorrect_question_ids"]),
+                        }
+                        for record in normalized_records
+                    ],
+                )
+            conn.commit()
+        if records:
+            touch_session(records[0]["session_id"], "in_progress")
+
+    _with_retry(write_records)
+
+
 def _normalize_result(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     for field in ("Timestamp", "mirror_timestamp"):
         timestamp = normalized.get(field)
         if isinstance(timestamp, datetime):
             normalized[field] = timestamp.isoformat()
+    return normalized
+
+
+def _normalize_pwf_comprehension_event(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    normalized["event_id"] = str(normalized["event_id"])
+    normalized["session_id"] = str(normalized["session_id"])
+    for field in ("source_timestamp", "timestamp", "Timestamp"):
+        value = normalized.get(field)
+        if isinstance(value, datetime):
+            normalized[field] = value.isoformat()
     return normalized
 
 
@@ -1524,6 +1647,80 @@ def get_pwf_results_by_session(session_id: str) -> list[dict[str, Any]]:
             )
             rows = cur.fetchall()
     return [_normalize_result(row) for row in rows]
+
+
+def get_pwf_comprehension_events_by_session(session_id: str) -> list[dict[str, Any]]:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        return [
+            _normalize_pwf_comprehension_event(record)
+            for record in sorted(
+                _memory_pwf_comprehension_events,
+                key=lambda item: (item.get("Timestamp", ""), item.get("sequence", 0)),
+            )
+            if record.get("session_id") == session_id
+        ]
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    event_id::text,
+                    session_id::text,
+                    question_set_version,
+                    sequence,
+                    event_type,
+                    outcome,
+                    round_number,
+                    attempt_number,
+                    attempt_in_round,
+                    attempt_limit,
+                    attempts_before,
+                    attempts_after,
+                    answers,
+                    incorrect_question_ids,
+                    correct_count,
+                    passed,
+                    locked_after,
+                    source_timestamp,
+                    timestamp AS "Timestamp"
+                FROM pwf_comprehension_events
+                WHERE session_id = %s
+                ORDER BY timestamp ASC, sequence ASC
+                """,
+                (session_id,),
+            )
+            rows = cur.fetchall()
+    return [_normalize_pwf_comprehension_event(row) for row in rows]
+
+
+def has_passed_pwf_comprehension(session_id: str) -> bool:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        return any(
+            record.get("session_id") == session_id
+            and record.get("event_type") == "submission"
+            and bool(record.get("passed"))
+            for record in _memory_pwf_comprehension_events
+        )
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pwf_comprehension_events
+                    WHERE session_id = %s
+                      AND event_type = 'submission'
+                      AND passed = TRUE
+                )
+                """,
+                (session_id,),
+            )
+            row = cur.fetchone()
+    return bool(row["exists"])
 
 
 def _trial_count_from_session(session: dict[str, Any]) -> int:
@@ -1781,6 +1978,12 @@ def mark_session_completed_if_ready(session_id: str) -> bool:
     session = get_session(session_id)
     if not session:
         return False
+    comprehension_required = bool(session.get("pwf_comprehension_version"))
+    if comprehension_required:
+        if not session.get("pwf_completed"):
+            return False
+        if not has_passed_pwf_comprehension(session_id):
+            return False
 
     expected_trials = _trial_count_from_session(session)
     if expected_trials <= 0:
@@ -2040,6 +2243,72 @@ def get_pwf_results_by_student(student_id: str) -> list[dict[str, Any]]:
             )
             rows = cur.fetchall()
     return [_normalize_result(row) for row in rows]
+
+
+def get_pwf_comprehension_events_by_student(student_id: str) -> list[dict[str, Any]]:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        session_metadata = {
+            session_id: session
+            for session_id, session in _memory_sessions.items()
+            if session.get("student_id") == student_id
+        }
+        results = []
+        for record in sorted(
+            _memory_pwf_comprehension_events,
+            key=lambda item: (item.get("Timestamp", ""), item.get("sequence", 0)),
+        ):
+            session = session_metadata.get(record.get("session_id"))
+            if not session:
+                continue
+            results.append(_normalize_pwf_comprehension_event({
+                **record,
+                "student_id": session.get("student_id", ""),
+                "student_id_hash": session.get("student_id_hash", ""),
+                "name": session.get("name", ""),
+                "gender": session.get("gender", ""),
+                "study_mode": session.get("study_mode", "full"),
+            }))
+        return results
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    event.event_id::text,
+                    event.session_id::text,
+                    session.student_id,
+                    session.student_id_hash,
+                    session.name,
+                    session.gender,
+                    session.study_mode,
+                    event.question_set_version,
+                    event.sequence,
+                    event.event_type,
+                    event.outcome,
+                    event.round_number,
+                    event.attempt_number,
+                    event.attempt_in_round,
+                    event.attempt_limit,
+                    event.attempts_before,
+                    event.attempts_after,
+                    event.answers,
+                    event.incorrect_question_ids,
+                    event.correct_count,
+                    event.passed,
+                    event.locked_after,
+                    event.source_timestamp,
+                    event.timestamp AS "Timestamp"
+                FROM pwf_comprehension_events AS event
+                JOIN experiment_sessions AS session ON session.session_id = event.session_id
+                WHERE session.student_id = %s
+                ORDER BY event.timestamp ASC, event.sequence ASC
+                """,
+                (student_id,),
+            )
+            rows = cur.fetchall()
+    return [_normalize_pwf_comprehension_event(row) for row in rows]
 
 
 def _rate(ci_count: int, total: int) -> float | None:

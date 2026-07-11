@@ -1,6 +1,15 @@
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional
 from datetime import datetime
+from uuid import UUID
+
+
+PWF_COMPREHENSION_VERSION = "2026-07-11-comprehension-v2"
+PWF_COMPREHENSION_SUPPORTED_VERSIONS = {
+    "2026-07-11-comprehension-v1",
+    PWF_COMPREHENSION_VERSION,
+}
+MIN_STEP2_COMPOUND_PROBABILITY = 0.011
 
 
 class SessionStartRequest(BaseModel):
@@ -10,6 +19,7 @@ class SessionStartRequest(BaseModel):
     consent_version: str
     consent_accepted_at: datetime
     study_mode: str = "full"
+    pwf_comprehension_version: Optional[str] = None
 
     @field_validator("gender")
     @classmethod
@@ -30,6 +40,15 @@ class SessionStartRequest(BaseModel):
     def validate_study_mode(cls, v: str) -> str:
         if v not in {"full", "pilot"}:
             raise ValueError("study_mode must be one of: full, pilot")
+        return v
+
+    @field_validator("pwf_comprehension_version")
+    @classmethod
+    def validate_pwf_comprehension_version(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        if v not in PWF_COMPREHENSION_SUPPORTED_VERSIONS:
+            raise ValueError("unsupported pwf_comprehension_version")
         return v
 
 
@@ -101,6 +120,13 @@ class CiResult(BaseModel):
             raise ValueError("amount_multiplier must be positive")
         return v
 
+    @field_validator("N")
+    @classmethod
+    def validate_compound_level(cls, v: int) -> int:
+        if v not in {2, 3}:
+            raise ValueError("N must be either 2 or 3")
+        return v
+
     @field_validator("choice")
     @classmethod
     def validate_choice(cls, v: str) -> str:
@@ -131,8 +157,8 @@ class CiResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_indifference_directions(self):
-        if self.s < 0.01:
-            raise ValueError("Step 2 probability s must be at least 0.01 (1%)")
+        if self.s ** self.N < MIN_STEP2_COMPOUND_PROBABILITY:
+            raise ValueError("Step 2 compounded probability s^N must be at least 0.011 (1.1%)")
         if abs(self.r - self.p) < 1e-12:
             raise ValueError("CI trial invalid: r must differ from p")
         if abs(self.r - self.q) < 1e-12:
@@ -330,3 +356,134 @@ class PwfBatch(BaseModel):
         if not v:
             raise ValueError("results must not be empty")
         return v
+
+
+PWF_COMPREHENSION_ANSWER_KEY = {
+    "probability_meaning": "b",
+    "lottery_tradeoff": "d",
+    "standard_answer": "no",
+    "indifference_input": "c",
+    "serious_answers": "yes",
+    "indifferent_payment": "d",
+}
+PWF_COMPREHENSION_ALLOWED_ANSWERS = {
+    "probability_meaning": {"a", "b", "c", "d"},
+    "lottery_tradeoff": {"a", "b", "c", "d"},
+    "standard_answer": {"yes", "no"},
+    "indifference_input": {"a", "b", "c", "d"},
+    "serious_answers": {"yes", "no"},
+    "indifferent_payment": {"a", "b", "c", "d"},
+}
+
+
+class PwfComprehensionEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: UUID
+    session_id: str
+    question_set_version: str
+    sequence: int = Field(ge=1)
+    event_type: str
+    outcome: str
+    round_number: int = Field(ge=1)
+    attempt_number: Optional[int] = Field(default=None, ge=1)
+    attempt_in_round: Optional[int] = Field(default=None, ge=1)
+    attempt_limit: int = Field(ge=1, le=3)
+    attempts_before: int = Field(ge=0, le=3)
+    attempts_after: int = Field(ge=0, le=3)
+    answers: dict[str, str]
+    incorrect_question_ids: list[str] = Field(default_factory=list)
+    correct_count: int = Field(ge=0, le=6)
+    passed: bool
+    locked_after: bool
+    source_timestamp: datetime
+
+    @field_validator("source_timestamp")
+    @classmethod
+    def validate_source_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("source_timestamp must include a timezone")
+        return value
+
+    @model_validator(mode="after")
+    def validate_event_consistency(self):
+        if self.question_set_version not in PWF_COMPREHENSION_SUPPORTED_VERSIONS:
+            raise ValueError("unsupported PWF comprehension question_set_version")
+        if self.event_type not in {"submission", "unlock"}:
+            raise ValueError("event_type must be one of: submission, unlock")
+        if self.outcome not in {"failed", "locked", "passed", "unlocked"}:
+            raise ValueError("outcome must be one of: failed, locked, passed, unlocked")
+
+        question_ids = set(PWF_COMPREHENSION_ANSWER_KEY)
+        answer_ids = set(self.answers)
+        if not answer_ids.issubset(question_ids):
+            raise ValueError("answers contains an unknown comprehension question")
+        for question_id, answer in self.answers.items():
+            if answer not in PWF_COMPREHENSION_ALLOWED_ANSWERS[question_id]:
+                raise ValueError(f"invalid answer for comprehension question: {question_id}")
+
+        incorrect_ids = list(self.incorrect_question_ids)
+        if len(incorrect_ids) != len(set(incorrect_ids)) or not set(incorrect_ids).issubset(question_ids):
+            raise ValueError("incorrect_question_ids must contain unique known question ids")
+        computed_incorrect = [
+            question_id
+            for question_id in PWF_COMPREHENSION_ANSWER_KEY
+            if question_id in self.answers
+            and self.answers[question_id] != PWF_COMPREHENSION_ANSWER_KEY[question_id]
+        ]
+
+        if self.event_type == "submission":
+            if answer_ids != question_ids:
+                raise ValueError("submission events must contain answers to all six comprehension questions")
+            if set(incorrect_ids) != set(computed_incorrect):
+                raise ValueError("incorrect_question_ids does not match the submitted answers")
+            expected_limit = 3 if self.round_number == 1 else 2
+            if self.attempt_limit != expected_limit:
+                raise ValueError("attempt_limit does not match the comprehension round")
+            if self.attempt_number is None or self.attempt_in_round is None:
+                raise ValueError("submission events require attempt_number and attempt_in_round")
+            if self.attempt_in_round != self.attempt_limit - self.attempts_before + 1:
+                raise ValueError("attempt_in_round does not match attempts_before")
+            if self.attempt_in_round > self.attempt_limit:
+                raise ValueError("attempt_in_round cannot exceed attempt_limit")
+            if self.attempts_after != self.attempts_before - 1:
+                raise ValueError("submission attempts_after must be one less than attempts_before")
+            expected_passed = not computed_incorrect
+            expected_locked = not expected_passed and self.attempts_after == 0
+            expected_outcome = "passed" if expected_passed else "locked" if expected_locked else "failed"
+            if self.passed != expected_passed or self.locked_after != expected_locked or self.outcome != expected_outcome:
+                raise ValueError("submission outcome flags do not match the submitted answers")
+            if self.correct_count != len(question_ids) - len(computed_incorrect):
+                raise ValueError("correct_count does not match the submitted answers")
+            return self
+
+        if self.round_number <= 1:
+            raise ValueError("unlock events must start a retry round after the initial round")
+        if self.outcome != "unlocked" or self.passed or self.locked_after:
+            raise ValueError("unlock event outcome flags are inconsistent")
+        if self.attempt_number is not None or self.attempt_in_round is not None:
+            raise ValueError("unlock events cannot contain attempt numbers")
+        if self.attempt_limit != 2 or self.attempts_before != 0 or self.attempts_after != 2:
+            raise ValueError("unlock events must grant exactly two new attempts")
+        if incorrect_ids or computed_incorrect:
+            raise ValueError("unlock events may only retain previously correct answers")
+        if self.correct_count != len(self.answers):
+            raise ValueError("unlock correct_count must match retained answers")
+        return self
+
+
+class PwfComprehensionEventBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    events: list[PwfComprehensionEvent]
+
+    @field_validator("events")
+    @classmethod
+    def validate_events(cls, value: list[PwfComprehensionEvent]) -> list[PwfComprehensionEvent]:
+        if not value:
+            raise ValueError("events must not be empty")
+        if len({event.event_id for event in value}) != len(value):
+            raise ValueError("events must not repeat event_id values")
+        if len({event.session_id for event in value}) != 1:
+            raise ValueError("events must belong to one session")
+        return value

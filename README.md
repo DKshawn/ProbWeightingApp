@@ -75,10 +75,23 @@ The API creates tables automatically on first database use:
 - `experiment_sessions`: one row per experiment session, including generated CI trials
 - `ci_results`: one row per CI trial result
 - `pwf_results`: one row per PWF module task result
+- `pwf_comprehension_events`: one immutable row per comprehension submission or valid staff unlock
 
 `ci_results` has a unique constraint on `(session_id, trial)`, and
 `pwf_results` has a unique constraint on `(session_id, pwf_trial)`, so accidental
 double submission updates the existing row instead of creating duplicates.
+Comprehension events use a client-generated UUID, making cumulative replay
+idempotent. Sessions created with the current questionnaire version must have a
+server-validated passing event before PWF completion; the iframe waits for the
+database acknowledgement before starting formal tasks. Pre-existing sessions,
+whose questionnaire version is null, retain the legacy resume behavior.
+The current questionnaire is `2026-07-11-comprehension-v2`; the backend still
+accepts v1 events from already-open legacy sessions. Its practice sequence is
+the original switching-list task, a Step 1 amount match, and a Step 4 choice.
+
+Use the app root (`/`) for participant sessions so records go through the API.
+Opening `/pwf/index.html` redirects there; the local-only standalone view now
+requires the explicit `?standalone=1` development flag.
 
 Older deployment tables such as `prob_sessions`, `trial_results`, and
 `utility_curvature_results` are treated as retired tables. The app no longer
@@ -128,7 +141,7 @@ cd /Users/dk/Documents/expcode/prelec/ProbWeightingApp
 # Inspect one or more participants across session, CI, and PWF records.
 ./.venv/bin/python scripts/neon_admin.py show 8723126 8724123
 
-# Export the three canonical tables for selected participants.
+# Export the four research tables for selected participants.
 ./.venv/bin/python scripts/neon_admin.py export --ids 8723126 8724123 --out exports/selected
 
 # Export all completed sessions.
@@ -147,8 +160,8 @@ intentional participant cleanup, `delete-student` requires both an explicit
 ./.venv/bin/python scripts/neon_admin.py delete-student 8723126 --study-mode full --confirm
 ```
 
-Deleting an `experiment_sessions` row also deletes that session's CI and PWF
-results through the database's `ON DELETE CASCADE` constraints. Do not use the
+Deleting an `experiment_sessions` row also deletes that session's CI, PWF, and
+PWF comprehension records through the database's `ON DELETE CASCADE` constraints. Do not use the
 delete command against production data unless the IDs and study mode have been
 checked first.
 

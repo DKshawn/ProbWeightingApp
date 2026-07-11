@@ -10,10 +10,103 @@ const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
 // Bump this frozen design identifier whenever a protocol change should create a new CP assignment.
-const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks-cp-seeded-all-tasks-consent-gender";
+const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks-cp-seeded-first-task-no-tp-consent-gender";
+const STORAGE_SCHEMA_VERSION = "2026-07-11-comprehension-practice-v5";
 const CP_ASSIGNMENT_ALGORITHM = "fnv1a-mulberry32-v1";
 const CONSENT_VERSION = "2026-07-11-consent-form-v1";
 const GENDER_OPTIONS = ["male", "female"];
+const PRACTICE_PANEL_PRACTICE = "practice";
+const PRACTICE_PANEL_COMPREHENSION = "comprehension";
+const PRACTICE_STEP_MPL = 0;
+const PRACTICE_STEP_1 = 1;
+const PRACTICE_STEP_4 = 2;
+const PRACTICE_STEP_COUNT = 3;
+const COMPREHENSION_INITIAL_ATTEMPTS = 3;
+const COMPREHENSION_RETRY_ATTEMPTS = 2;
+const COMPREHENSION_UNLOCK_CODE = "0000000";
+const COMPREHENSION_QUESTION_SET_VERSION = "2026-07-11-comprehension-v2";
+const COMPREHENSION_INCOMPLETE_MESSAGE = "未回答の問題があります。すべての問題に回答してください。";
+const COMPREHENSION_QUESTIONS = [
+  {
+    id: "probability_meaning",
+    prompt: "「30%の確率で1,000円を獲得するくじ」とは、どのような意味ですか。",
+    correctAnswer: "b",
+    options: [
+      { value: "a", label: "必ず300円を獲得する" },
+      { value: "b", label: "30%の確率で1,000円を獲得し、70%の確率で0円になる" },
+      { value: "c", label: "少なくとも1,000円を獲得する" },
+      { value: "d", label: "同じくじを30回引く" },
+    ],
+  },
+  {
+    id: "lottery_tradeoff",
+    prompt: "一方のくじは賞金が高い代わりに当選確率が低く、もう一方のくじは賞金が低い代わりに当選確率が高いとします。どのように回答すべきですか。",
+    correctAnswer: "d",
+    options: [
+      { value: "a", label: "必ず賞金が高い方を選ぶ" },
+      { value: "b", label: "必ず当選確率が高い方を選ぶ" },
+      { value: "c", label: "二つのくじは必ず同じ価値だと回答する" },
+      { value: "d", label: "賞金と確率の両方を考え、自分の本当の好みに基づいて回答する" },
+    ],
+  },
+  {
+    id: "standard_answer",
+    prompt: "実験中のくじの選択には、すべての参加者が選ぶべき共通の「正解」がありますか。",
+    correctAnswer: "no",
+    options: [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ],
+  },
+  {
+    id: "indifference_input",
+    prompt: "金額または確率を調整して、二つのくじを「ほとんど無差別」にするよう求められた場合、どのように回答すべきですか。",
+    correctAnswer: "c",
+    options: [
+      { value: "a", label: "入力できる最大の値にする" },
+      { value: "b", label: "入力できる最小の値にする" },
+      { value: "c", label: "自分にとって二つのくじが最も同じくらい魅力的になる値にする" },
+      { value: "d", label: "研究者が期待していると思う値にする" },
+    ],
+  },
+  {
+    id: "serious_answers",
+    prompt: "正式実験で行う各意思決定は、最終的な追加報酬を決めるために無作為に選ばれる可能性があります。そのため、すべての意思決定に自分の本当の考えに基づいて回答する必要があります。",
+    correctAnswer: "yes",
+    options: [
+      { value: "yes", label: "Yes" },
+      { value: "no", label: "No" },
+    ],
+  },
+  {
+    id: "indifferent_payment",
+    prompt: "以下のStep 4の画面で「ほとんど無差別」を選び、この意思決定が最終的な追加報酬の対象に選ばれた場合、追加報酬はどのように決まりますか。",
+    visual: "step4",
+    correctAnswer: "d",
+    options: [
+      { value: "a", label: "二つの選択肢の両方について支払われる" },
+      { value: "b", label: "その意思決定からは追加報酬が支払われない" },
+      { value: "c", label: "二つの選択肢の平均額が支払われる" },
+      { value: "d", label: "二つの選択肢から一つを無作為に選び、選ばれたくじの確率に従って抽選する" },
+    ],
+  },
+];
+
+function createComprehensionState() {
+  return {
+    answers: {},
+    attemptsRemaining: COMPREHENSION_INITIAL_ATTEMPTS,
+    passed: false,
+    locked: false,
+    message: "",
+    messageType: "",
+    confirmOpen: false,
+    attemptNumber: 0,
+    roundNumber: 1,
+    events: [],
+    acknowledgedEventIds: [],
+  };
+}
 const CONSENT_SECTIONS = [
   {
     heading: "研究課題名",
@@ -127,7 +220,13 @@ const CONSENT_CONFIRMATIONS = [
 ];
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const EMBEDDED_MODE = URL_PARAMS.get("embedded") === "1";
+const SMOKE_MODE = URL_PARAMS.get("smoke") === "1";
+const STANDALONE_MODE = URL_PARAMS.get("standalone") === "1";
 const PILOT_MODE = URL_PARAMS.get("mode") === "pilot" || URL_PARAMS.get("study_mode") === "pilot" || URL_PARAMS.get("pilot") === "1";
+
+if (!EMBEDDED_MODE && !SMOKE_MODE && !STANDALONE_MODE) {
+  window.location.replace(`/${window.location.search}`);
+}
 
 const BASE_BLOCKS = createBlocks(1);
 
@@ -205,6 +304,10 @@ const state = {
   taskTimedOut: false,
   memoryChallenge: null,
   practiceFeedback: null,
+  practicePanel: PRACTICE_PANEL_PRACTICE,
+  practiceCompleted: false,
+  practiceStepIndex: PRACTICE_STEP_MPL,
+  comprehension: createComprehensionState(),
   csvDownloaded: false,
   error: "",
 };
@@ -333,8 +436,52 @@ function roundYen(value) {
   return Math.round(Number(value));
 }
 
+function normalizeComprehensionState(value) {
+  const normalized = createComprehensionState();
+  if (!value || typeof value !== "object") return normalized;
+
+  const answers = value.answers && typeof value.answers === "object" ? value.answers : {};
+  COMPREHENSION_QUESTIONS.forEach((question) => {
+    const answer = answers[question.id];
+    if (question.options.some((option) => option.value === answer)) {
+      normalized.answers[question.id] = answer;
+    }
+  });
+
+  const attemptsRemaining = Number(value.attemptsRemaining);
+  if (Number.isInteger(attemptsRemaining)) {
+    normalized.attemptsRemaining = Math.max(0, Math.min(COMPREHENSION_INITIAL_ATTEMPTS, attemptsRemaining));
+  }
+  normalized.passed = Boolean(value.passed);
+  normalized.locked = !normalized.passed && (Boolean(value.locked) || normalized.attemptsRemaining === 0);
+  normalized.message = typeof value.message === "string" ? value.message : "";
+  normalized.messageType = ["error", "success", "info"].includes(value.messageType) ? value.messageType : "";
+  const events = Array.isArray(value.events) ? value.events : [];
+  normalized.events = events.filter((event) => (
+    event
+    && typeof event === "object"
+    && typeof event.event_id === "string"
+    && event.question_set_version === COMPREHENSION_QUESTION_SET_VERSION
+    && ["submission", "unlock"].includes(event.event_type)
+  ));
+  const attemptNumber = Number(value.attemptNumber);
+  normalized.attemptNumber = Number.isInteger(attemptNumber) && attemptNumber >= 0
+    ? attemptNumber
+    : normalized.events.filter((event) => event.event_type === "submission").length;
+  const roundNumber = Number(value.roundNumber);
+  normalized.roundNumber = Number.isInteger(roundNumber) && roundNumber >= 1
+    ? roundNumber
+    : Math.max(1, 1 + normalized.events.filter((event) => event.event_type === "unlock").length);
+  const eventIds = new Set(normalized.events.map((event) => event.event_id));
+  normalized.acknowledgedEventIds = Array.isArray(value.acknowledgedEventIds)
+    ? [...new Set(value.acknowledgedEventIds.filter((eventId) => eventIds.has(eventId)))]
+    : [];
+  return normalized;
+}
+
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
+    storageSchemaVersion: STORAGE_SCHEMA_VERSION,
     designVersion: DESIGN_VERSION,
     phase: state.phase,
     participant: state.participant,
@@ -351,6 +498,21 @@ function saveState() {
     taskTimedOut: state.taskTimedOut,
     memoryChallenge: state.memoryChallenge,
     practiceFeedback: state.practiceFeedback,
+    practicePanel: state.practicePanel,
+    practiceCompleted: state.practiceCompleted,
+    practiceStepIndex: state.practiceStepIndex,
+    comprehension: {
+      answers: state.comprehension.answers,
+      attemptsRemaining: state.comprehension.attemptsRemaining,
+      passed: state.comprehension.passed,
+      locked: state.comprehension.locked,
+      message: state.comprehension.message,
+      messageType: state.comprehension.messageType,
+      attemptNumber: state.comprehension.attemptNumber,
+      roundNumber: state.comprehension.roundNumber,
+      events: state.comprehension.events,
+      acknowledgedEventIds: state.comprehension.acknowledgedEventIds,
+    },
     csvDownloaded: state.csvDownloaded,
   }));
 }
@@ -363,6 +525,7 @@ function restoreState(expectedParticipant = "") {
     return false;
   }
   if (!saved || typeof saved !== "object") return false;
+  if (saved.storageSchemaVersion !== STORAGE_SCHEMA_VERSION) return false;
   if (saved.designVersion !== DESIGN_VERSION) return false;
   if (!saved.participant || !saved.assignment) return false;
   if (!GENDER_OPTIONS.includes(saved.gender)) return false;
@@ -402,10 +565,22 @@ function restoreState(expectedParticipant = "") {
     ? "finish"
     : "task";
   const normalizedPhase = saved.phase === "practiceFeedback" && !practiceFeedback
-    ? "practiceSummary"
+    ? "practice"
     : saved.phase === "memoryPreRecall"
     ? "task"
     : savedPhase;
+  let practicePanel = [PRACTICE_PANEL_PRACTICE, PRACTICE_PANEL_COMPREHENSION].includes(saved.practicePanel)
+    ? saved.practicePanel
+    : PRACTICE_PANEL_PRACTICE;
+  const practiceCompleted = Boolean(saved.practiceCompleted) || normalizedPhase === "practiceSummary";
+  const savedPracticeStepIndex = Number(saved.practiceStepIndex);
+  const practiceStepIndex = practiceCompleted
+    ? PRACTICE_STEP_4
+    : Number.isInteger(savedPracticeStepIndex)
+      ? Math.max(PRACTICE_STEP_MPL, Math.min(PRACTICE_STEP_4, savedPracticeStepIndex))
+      : PRACTICE_STEP_MPL;
+  const comprehension = normalizeComprehensionState(saved.comprehension);
+  if (comprehension.locked) practicePanel = PRACTICE_PANEL_COMPREHENSION;
 
   Object.assign(state, {
     phase: normalizedPhase,
@@ -425,6 +600,10 @@ function restoreState(expectedParticipant = "") {
     taskTimedOut: Boolean(saved.taskTimedOut),
     memoryChallenge: normalizeMemoryChallenge(saved.memoryChallenge, boundedTaskIndex, normalizedPhase),
     practiceFeedback: normalizedPhase === "practiceFeedback" ? practiceFeedback : null,
+    practicePanel,
+    practiceCompleted,
+    practiceStepIndex,
+    comprehension,
     csvDownloaded: Boolean(saved.csvDownloaded),
     error: "",
   });
@@ -438,6 +617,105 @@ function restoreState(expectedParticipant = "") {
 function postEmbeddedMessage(message) {
   if (!EMBEDDED_MODE || !window.parent || window.parent === window) return;
   window.parent.postMessage(message, window.location.origin);
+}
+
+function createComprehensionEventId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0"));
+  return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
+
+function postComprehensionEvents() {
+  if (!state.comprehension.events.length) return;
+  postEmbeddedMessage({
+    type: "pwf-comprehension-events",
+    participant: state.participant,
+    gender: state.gender,
+    consent_version: CONSENT_VERSION,
+    consent_accepted_at: state.consentAcceptedAt,
+    assignment: state.assignment,
+    events: state.comprehension.events,
+  });
+}
+
+function recordComprehensionEvent(event) {
+  state.comprehension.events.push(event);
+  saveState();
+  postComprehensionEvents();
+}
+
+function passedComprehensionEvent() {
+  return [...state.comprehension.events]
+    .reverse()
+    .find((event) => event.event_type === "submission" && event.passed);
+}
+
+function isComprehensionPassSaved() {
+  if (!EMBEDDED_MODE) return true;
+  const passedEvent = passedComprehensionEvent();
+  return Boolean(
+    passedEvent?.event_id
+    && state.comprehension.acknowledgedEventIds.includes(passedEvent.event_id),
+  );
+}
+
+function retryComprehensionSave() {
+  state.comprehension.message = "理解度確認の回答を保存しています。しばらくお待ちください。";
+  state.comprehension.messageType = "info";
+  saveState();
+  postComprehensionEvents();
+  render();
+}
+
+function initializeComprehensionSync() {
+  if (!EMBEDDED_MODE || !window.addEventListener) return;
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || event.source !== window.parent) return;
+    const messageType = event.data?.type;
+    if (!["pwf-comprehension-events-saved", "pwf-comprehension-events-error"].includes(messageType)) return;
+
+    if (String(event.data?.participant ?? "") !== String(state.participant ?? "")) return;
+
+    if (messageType === "pwf-comprehension-events-saved") {
+      const currentEventIds = new Set(state.comprehension.events.map((comprehensionEvent) => comprehensionEvent.event_id));
+      const confirmedEventIds = Array.isArray(event.data?.confirmed_event_ids)
+        ? event.data.confirmed_event_ids.filter((eventId) => currentEventIds.has(eventId))
+        : [];
+      state.comprehension.acknowledgedEventIds = [
+        ...new Set([...state.comprehension.acknowledgedEventIds, ...confirmedEventIds]),
+      ];
+      if (state.comprehension.passed && isComprehensionPassSaved()) {
+        state.comprehension.message = "すべて正解です。理解度確認が完了しました。続けて、正式な実験を開始してください。";
+        state.comprehension.messageType = "success";
+        state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+      }
+      saveState();
+      if (state.comprehension.passed && isComprehensionPassSaved() && state.phase === "practiceSummary") render();
+      return;
+    }
+
+    const attemptedEventIds = Array.isArray(event.data?.attempted_event_ids)
+      ? event.data.attempted_event_ids
+      : [];
+    const passedEvent = passedComprehensionEvent();
+    if (state.comprehension.passed && attemptedEventIds.includes(passedEvent?.event_id)) {
+      state.comprehension.message = "回答記録を保存できませんでした。通信を確認し、「保存を再試行」を押してください。";
+      state.comprehension.messageType = "error";
+      state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+      saveState();
+      if (state.phase === "practiceSummary") render();
+    }
+  });
 }
 
 function render() {
@@ -505,6 +783,10 @@ function returnToSetupScreen() {
     taskTimedOut: false,
     memoryChallenge: null,
     practiceFeedback: null,
+    practicePanel: PRACTICE_PANEL_PRACTICE,
+    practiceCompleted: false,
+    practiceStepIndex: PRACTICE_STEP_MPL,
+    comprehension: createComprehensionState(),
     error: "",
   });
   render();
@@ -616,6 +898,7 @@ function renderSetup() {
         consent_accepted_at: state.consentAcceptedAt,
         assignment: state.assignment,
       });
+      postComprehensionEvents();
       pushRunningHistory();
       render();
       scrollToTopAfterRender();
@@ -635,6 +918,10 @@ function renderSetup() {
     state.taskTimedOut = false;
     state.memoryChallenge = null;
     state.practiceFeedback = null;
+    state.practicePanel = PRACTICE_PANEL_PRACTICE;
+    state.practiceCompleted = false;
+    state.practiceStepIndex = PRACTICE_STEP_MPL;
+    state.comprehension = createComprehensionState();
     state.csvDownloaded = false;
     state.error = "";
     saveState();
@@ -720,92 +1007,772 @@ function renderBlockIntro() {
     state.taskTimedOut = false;
     state.memoryChallenge = null;
     state.practiceFeedback = null;
+    state.practicePanel = PRACTICE_PANEL_PRACTICE;
+    state.practiceCompleted = false;
+    state.practiceStepIndex = PRACTICE_STEP_MPL;
+    state.comprehension = createComprehensionState();
     state.blockStartedAt = Date.now();
     state.taskStartedAt = Date.now();
     state.error = "";
+    saveState();
     render();
   });
 }
 
-function renderPractice() {
-  const block = currentBlock();
+function renderPracticeTabs(activePanel) {
+  const practiceStatus = state.practiceCompleted ? '<span class="practice-tab-status">完了</span>' : "";
+  const comprehensionStatus = state.comprehension.passed ? '<span class="practice-tab-status">完了</span>' : "";
+  return `
+    <div class="practice-tabs" role="tablist" aria-label="練習と理解度確認">
+      <button
+        class="practice-tab ${activePanel === PRACTICE_PANEL_PRACTICE ? "active" : ""}"
+        id="practiceWindowTab"
+        type="button"
+        role="tab"
+        aria-selected="${activePanel === PRACTICE_PANEL_PRACTICE}"
+        aria-controls="practiceWindowPanel"
+        data-practice-tab="${PRACTICE_PANEL_PRACTICE}"
+      >練習問題${practiceStatus}</button>
+      <button
+        class="practice-tab ${activePanel === PRACTICE_PANEL_COMPREHENSION ? "active" : ""}"
+        id="comprehensionWindowTab"
+        type="button"
+        role="tab"
+        aria-selected="${activePanel === PRACTICE_PANEL_COMPREHENSION}"
+        aria-controls="comprehensionWindowPanel"
+        data-practice-tab="${PRACTICE_PANEL_COMPREHENSION}"
+      >理解度確認${comprehensionStatus}</button>
+    </div>
+  `;
+}
+
+function switchPracticePanel(panel) {
+  if (![PRACTICE_PANEL_PRACTICE, PRACTICE_PANEL_COMPREHENSION].includes(panel)) return;
+  if (state.comprehension.locked && panel !== PRACTICE_PANEL_COMPREHENSION) return;
+  state.practicePanel = panel;
+  state.comprehension.confirmOpen = false;
+  saveState();
+  render();
+  scrollToTopAfterRender();
+}
+
+function bindPracticeNavigation() {
+  const tabs = Array.from(document.querySelectorAll("[data-practice-tab]"));
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => switchPracticePanel(tab.dataset.practiceTab));
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const panel = tab.dataset.practiceTab === PRACTICE_PANEL_PRACTICE
+        ? PRACTICE_PANEL_COMPREHENSION
+        : PRACTICE_PANEL_PRACTICE;
+      switchPracticePanel(panel);
+    });
+  });
+  document.getElementById("switchToComprehension")?.addEventListener("click", () => {
+    switchPracticePanel(PRACTICE_PANEL_COMPREHENSION);
+  });
+  document.getElementById("switchToPractice")?.addEventListener("click", () => {
+    switchPracticePanel(PRACTICE_PANEL_PRACTICE);
+  });
+}
+
+function ensurePracticeStepRuntime() {
+  const taskKey = `practice-step-${state.practiceStepIndex}`;
+  if (state.runtime?.taskKey === taskKey) return;
+  state.runtime = { taskKey, value: "" };
+}
+
+function renderFixedStep4Display({ interactive = false, selectedChoice = "", neutralLabels = false, compact = false, showStepLabel = true } = {}) {
+  const leftLabel = neutralLabels ? "左の選択肢" : "選択肢A";
+  const rightLabel = neutralLabels ? "右の選択肢" : "選択肢B";
+  const choices = [
+    { value: "X", label: neutralLabels ? "左を好む" : "Aを好む", className: "step4-choice-left" },
+    { value: "Indifferent", label: "ほとんど無差別", className: "step4-choice-indifferent" },
+    { value: "Y", label: neutralLabels ? "右を好む" : "Bを好む", className: "step4-choice-right" },
+  ];
+  const choiceMarkup = choices.map((choice) => {
+    const selectedClass = selectedChoice === choice.value ? " selected" : "";
+    if (interactive) {
+      return `<button class="btn-choice practice-step4-choice ${choice.className}${selectedClass}" type="button" data-practice-step4-choice="${choice.value}">${choice.label}</button>`;
+    }
+    return `<div class="btn-choice practice-step4-choice static${selectedClass}" aria-hidden="true">${choice.label}</div>`;
+  }).join("");
+  return `
+    <section class="practice-step4-display${compact ? " compact" : ""}" aria-label="Step 4の比較画面">
+      ${showStepLabel ? '<div class="step-label">Step 4</div>' : ""}
+      <p class="question-intro">以下の2つのくじを比べてください：</p>
+      <div class="lottery-compare">
+        <div class="lottery-box lottery-a">
+          <div class="lottery-label">${leftLabel}</div>
+          <div class="lottery-detail">確率 <strong>40%</strong> で</div>
+          <div class="practice-lottery-amount">190円</div>
+        </div>
+        <div class="vs-label">vs</div>
+        <div class="lottery-box lottery-b">
+          <div class="lottery-label">${rightLabel}</div>
+          <div class="lottery-detail">確率 <strong>80%</strong> で</div>
+          <div class="practice-lottery-amount">95円</div>
+        </div>
+      </div>
+      <div class="practice-step4-choices">${choiceMarkup}</div>
+      ${selectedChoice ? `<p class="sr-only">選択：${escapeHtml(choices.find((choice) => choice.value === selectedChoice)?.label || "")}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderPracticeStep1Body() {
+  ensurePracticeStepRuntime();
+  return `
+    <section class="question-box practice-ci-step">
+      <div class="step-label">Step 1</div>
+      <div class="practice-ci-option-list">
+        <p><span class="practice-ci-option-label">選択肢A</span><strong>確率 20% で 100円</strong></p>
+        <p><span class="practice-ci-option-label">選択肢B</span><strong>確率 10% で <span class="practice-unknown">?円</span></strong></p>
+      </div>
+      <p>上の2つが無差別になるように、選択肢Bの金額を答えてください。</p>
+      <form class="practice-step-form" id="practiceStep1Form" novalidate>
+        <div class="field">
+          <label for="practiceStep1Value">金額 x（円）</label>
+          <input id="practiceStep1Value" type="number" min="100" max="100000000" step="1" value="${escapeHtml(state.runtime.value)}" placeholder="100以上の金額" autofocus />
+        </div>
+        ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+        <button class="btn-primary" type="submit">回答して次へ</button>
+      </form>
+    </section>
+  `;
+}
+
+function renderPracticeStep4Body() {
+  return `
+    <section class="question-box practice-ci-step">
+      ${renderFixedStep4Display({ interactive: true })}
+      <p class="muted">正解はありません。自分の本当の好みに基づいて選んでください。</p>
+    </section>
+  `;
+}
+
+function renderCurrentPracticeBody(block) {
+  if (state.practiceStepIndex === PRACTICE_STEP_1) return renderPracticeStep1Body();
+  if (state.practiceStepIndex === PRACTICE_STEP_4) return renderPracticeStep4Body();
   const task = currentPracticeTask();
   ensureRuntime(task);
+  return renderTaskBody(block, task);
+}
+
+function showCustomPracticeFeedback(feedback) {
+  state.practiceFeedback = feedback;
+  state.phase = "practiceFeedback";
+  state.runtime = null;
+  state.taskTimedOut = false;
+  state.memoryChallenge = null;
+  state.taskStartedAt = Date.now();
+  state.error = "";
+  saveState();
+  render();
+  scrollToTopAfterRender();
+}
+
+function settlePracticeCiDecision({ response, options, indifferenceSelectionMethod }) {
+  const normalizedOptions = (options || []).map((option) => ({
+    label: String(option.label || ""),
+    probability: Number(option.probability),
+    amount: roundYen(option.amount),
+  })).filter((option) => (
+    option.label
+    && Number.isFinite(option.probability)
+    && option.probability >= 0
+    && option.probability <= 1
+    && Number.isFinite(option.amount)
+  ));
+
+  let selectedOption;
+  let selectionMethod = "participant_choice";
+  if (response === "Indifferent") {
+    selectedOption = normalizedOptions[Math.floor(Math.random() * normalizedOptions.length)];
+    selectionMethod = indifferenceSelectionMethod;
+  } else if (response === "X") {
+    selectedOption = normalizedOptions[0];
+  } else if (response === "Y") {
+    selectedOption = normalizedOptions[1];
+  }
+
+  if (!selectedOption) return null;
+
+  const randomDraw = Math.random();
+  const rewardAmount = randomDraw < selectedOption.probability ? selectedOption.amount : 0;
+  return {
+    response,
+    selectedOption: selectedOption.label,
+    selectionMethod,
+    probability: selectedOption.probability,
+    optionAmount: selectedOption.amount,
+    randomDraw: Math.round(randomDraw * 10000) / 10000,
+    rewardAmount,
+  };
+}
+
+function createPracticeStep1Payment(value) {
+  return settlePracticeCiDecision({
+    response: "Indifferent",
+    indifferenceSelectionMethod: "random_indifference",
+    options: [
+      { label: "A", probability: 0.2, amount: 100 },
+      { label: "B", probability: 0.1, amount: value },
+    ],
+  });
+}
+
+function createPracticeStep4Payment(choice) {
+  return settlePracticeCiDecision({
+    response: choice,
+    indifferenceSelectionMethod: "random_indifferent_choice",
+    options: [
+      { label: "A", probability: 0.4, amount: 190 },
+      { label: "B", probability: 0.8, amount: 95 },
+    ],
+  });
+}
+
+function bindCurrentPracticeHandlers(block) {
+  if (state.practiceStepIndex === PRACTICE_STEP_1) {
+    const input = document.getElementById("practiceStep1Value");
+    input?.addEventListener("input", () => {
+      state.runtime.value = input.value;
+    });
+    document.getElementById("practiceStep1Form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const rawValue = Number(input?.value);
+      if (!Number.isFinite(rawValue) || rawValue < 100 || rawValue > 100_000_000) {
+        state.error = "100〜100,000,000円の範囲で入力してください。";
+        render();
+        return;
+      }
+      const value = roundYen(rawValue);
+      showCustomPracticeFeedback({
+        kind: "step1",
+        value,
+        payment: createPracticeStep1Payment(value),
+      });
+    });
+    return;
+  }
+  if (state.practiceStepIndex === PRACTICE_STEP_4) {
+    document.querySelectorAll("[data-practice-step4-choice]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const choice = button.dataset.practiceStep4Choice;
+        showCustomPracticeFeedback({
+          kind: "step4",
+          choice,
+          payment: createPracticeStep4Payment(choice),
+        });
+      });
+    });
+    return;
+  }
+  const task = currentPracticeTask();
+  bindTaskHandlers(block, task, { practice: true });
+}
+
+function renderPractice() {
+  const block = currentBlock();
+  if (state.comprehension.locked) state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+  if (state.practicePanel === PRACTICE_PANEL_COMPREHENSION) {
+    renderComprehensionWindow();
+    return;
+  }
+
+  const practiceNumber = state.practiceStepIndex + 1;
   app.innerHTML = `
-    <main class="screen">
-      <section class="mode-panel practice-mode">
-        <strong>練習問題</strong>
-        <span>この回答は保存されません。何度でもやり直せます。</span>
-      </section>
-      <div class="progress-bar-wrapper">
-        <div class="progress-info">
-          <span>練習</span>
-          <span class="block-label">${escapeHtml(block.title)}</span>
+    <main class="screen practice-hub-screen">
+      ${renderPracticeTabs(PRACTICE_PANEL_PRACTICE)}
+      <section id="practiceWindowPanel" role="tabpanel" aria-labelledby="practiceWindowTab">
+        <section class="mode-panel practice-mode">
+          <strong>練習問題</strong>
+          <span>この回答は保存されません。何度でもやり直せます。</span>
+        </section>
+        <div class="progress-bar-wrapper practice-progress">
+          <div class="progress-info">
+            <span>練習 ${practiceNumber} / ${PRACTICE_STEP_COUNT}</span>
+            <span class="block-label">${escapeHtml(block.title)}</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" style="width:${(practiceNumber / PRACTICE_STEP_COUNT) * 100}%"></div></div>
         </div>
-        <div class="progress-track"><div class="progress-fill" style="width:0%"></div></div>
-      </div>
-      ${renderTaskBody(block, task)}
-      <div class="practice-actions">
-        <button class="btn-secondary" id="redoPractice" type="button">練習をもう一度</button>
-      </div>
+        ${renderCurrentPracticeBody(block)}
+      </section>
     </main>
   `;
-  bindTaskHandlers(block, task, { practice: true });
-  document.getElementById("redoPractice").addEventListener("click", resetPractice);
+  bindPracticeNavigation();
+  bindCurrentPracticeHandlers(block);
 }
 
 function renderPracticeSummary() {
   const block = currentBlock();
+  if (state.comprehension.locked) state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+  if (state.practicePanel === PRACTICE_PANEL_COMPREHENSION) {
+    renderComprehensionWindow();
+    return;
+  }
+
   app.innerHTML = `
-    <main class="screen narrow-screen">
-      <section class="center-card">
+    <main class="screen practice-hub-screen">
+      ${renderPracticeTabs(PRACTICE_PANEL_PRACTICE)}
+      <section class="practice-summary-panel" id="practiceWindowPanel" role="tabpanel" aria-labelledby="practiceWindowTab">
         <div class="step-label">練習完了</div>
         <h2>${escapeHtml(block.title)}</h2>
-        <p>練習問題が終わりました。次から正式な課題です。</p>
+        <p>練習問題が終わりました。理解度確認に全問正解すると、正式な課題が始まります。</p>
         <div class="btn-row">
-          <button class="btn-primary" id="startFormalTasks" type="button">正式な課題を始める</button>
+          ${state.comprehension.passed
+            ? isComprehensionPassSaved()
+              ? '<button class="btn-primary" id="startFormalTasks" type="button">正式な課題を始める</button>'
+              : '<button class="btn-primary" id="retryComprehensionSave" type="button">回答記録の保存を再試行</button>'
+            : '<button class="btn-primary" id="switchToComprehension" type="button">理解度確認へ</button>'}
           <button class="btn-secondary" id="redoPractice" type="button">練習をもう一度</button>
         </div>
       </section>
     </main>
   `;
-  document.getElementById("startFormalTasks").addEventListener("click", startFormalTasks);
+  bindPracticeNavigation();
+  document.getElementById("startFormalTasks")?.addEventListener("click", startFormalTasks);
+  document.getElementById("retryComprehensionSave")?.addEventListener("click", retryComprehensionSave);
   document.getElementById("redoPractice").addEventListener("click", resetPractice);
 }
 
-function renderPracticeFeedback() {
-  const block = currentBlock();
-  const task = currentPracticeTask();
-  const practiceFeedback = state.practiceFeedback;
-  const feedback = practiceFeedback?.feedback;
-  if (!feedback) {
-    finishPracticeFeedback();
+function renderComprehensionQuestion(question, index) {
+  const selectedAnswer = state.comprehension.answers[question.id] || "";
+  const options = question.options.map((option) => {
+    const prefix = /^[a-d]$/.test(option.value) ? `${option.value.toUpperCase()}. ` : "";
+    return `
+      <label class="choice-option comprehension-option">
+        <input
+          type="radio"
+          name="comprehension-${escapeHtml(question.id)}"
+          value="${escapeHtml(option.value)}"
+          data-comprehension-question="${escapeHtml(question.id)}"
+          ${selectedAnswer === option.value ? "checked" : ""}
+          ${state.comprehension.locked || state.comprehension.passed ? "disabled" : ""}
+        />
+        <span><strong>${escapeHtml(prefix)}</strong>${escapeHtml(option.label)}</span>
+      </label>
+    `;
+  }).join("");
+  return `
+    <fieldset class="comprehension-question" id="comprehension-question-${escapeHtml(question.id)}" tabindex="-1">
+      <legend><span class="comprehension-question-number">${index + 1}</span>${escapeHtml(question.prompt)}</legend>
+      ${question.visual === "step4"
+        ? renderFixedStep4Display({ selectedChoice: "Indifferent", neutralLabels: true, compact: true })
+        : ""}
+      <div class="comprehension-options">${options}</div>
+    </fieldset>
+  `;
+}
+
+function renderComprehensionConfirmDialog() {
+  if (!state.comprehension.confirmOpen) return "";
+  return `
+    <div class="comprehension-modal-backdrop" role="presentation">
+      <section class="comprehension-modal" id="comprehensionConfirmDialog" role="dialog" aria-modal="true" aria-labelledby="comprehensionConfirmTitle">
+        <h2 id="comprehensionConfirmTitle">回答を提出しますか？</h2>
+        <p>6問すべての回答を確認します。</p>
+        <div class="btn-row comprehension-modal-actions">
+          <button class="btn-secondary" id="cancelComprehensionSubmit" type="button">回答を見直す</button>
+          <button class="btn-primary" id="confirmComprehensionSubmit" type="button">回答を確認する</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderComprehensionLockDialog() {
+  if (!state.comprehension.locked) return "";
+  return `
+    <div class="comprehension-modal-backdrop" role="presentation">
+      <section class="comprehension-modal comprehension-lock-dialog" id="comprehensionLockDialog" role="alertdialog" aria-modal="true" aria-labelledby="comprehensionLockTitle" aria-describedby="comprehensionLockDescription">
+        <div class="step-label">回答を停止してください</div>
+        <h2 id="comprehensionLockTitle">実験担当者をお呼びください</h2>
+        <p id="comprehensionLockDescription">正しくない回答が続きました。これ以上回答せず、手を挙げて実験担当者に知らせてください。</p>
+        <form class="comprehension-unlock-form" id="comprehensionUnlockForm">
+          <label for="comprehensionUnlockCode">実験担当者用コード</label>
+          <input id="comprehensionUnlockCode" type="password" inputmode="numeric" maxlength="7" autocomplete="off" placeholder="7桁のコード" />
+          <p class="error comprehension-unlock-error" id="comprehensionUnlockError" aria-live="assertive"></p>
+          <button class="btn-primary" type="submit">確認</button>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderComprehensionWindow() {
+  const allAnswered = COMPREHENSION_QUESTIONS.every((question) => state.comprehension.answers[question.id]);
+  const canSubmit = state.practiceCompleted && !state.comprehension.locked && !state.comprehension.passed;
+  const messageClass = state.comprehension.messageType ? ` ${state.comprehension.messageType}` : "";
+  app.innerHTML = `
+    <main class="screen practice-hub-screen">
+      ${renderPracticeTabs(PRACTICE_PANEL_COMPREHENSION)}
+      <section class="comprehension-window" id="comprehensionWindowPanel" role="tabpanel" aria-labelledby="comprehensionWindowTab">
+        <div class="step-label">理解度確認</div>
+        <h2>実験の理解度確認</h2>
+        <p class="comprehension-intro">説明を確認し、6問すべてに回答してください。</p>
+        ${state.practiceCompleted
+          ? ""
+          : '<p class="comprehension-status info">回答内容は先に確認できます。回答の提出は、練習問題を完了した後にできます。</p>'}
+        <form class="comprehension-form" id="comprehensionForm">
+          <div class="comprehension-question-list">
+            ${COMPREHENSION_QUESTIONS.map(renderComprehensionQuestion).join("")}
+          </div>
+          <div class="comprehension-footer">
+            <p class="comprehension-attempts">回答確認の残り回数：<strong>${state.comprehension.attemptsRemaining}回</strong></p>
+            <p class="comprehension-status${messageClass}" id="comprehensionStatus" aria-live="assertive">${escapeHtml(state.comprehension.message)}</p>
+            ${!allAnswered && state.practiceCompleted
+              ? '<p class="comprehension-help">未回答の問題があります。すべての問題に回答してください。</p>'
+              : ""}
+            <div class="comprehension-actions">
+              ${state.comprehension.passed
+                ? ""
+                : '<button class="btn-secondary" id="switchToPractice" type="button">練習問題へ</button>'}
+              ${state.comprehension.passed
+                ? isComprehensionPassSaved()
+                  ? '<button class="btn-primary" id="startFormalTasks" type="button">正式な実験を開始する</button>'
+                  : '<button class="btn-primary" id="retryComprehensionSave" type="button">保存を再試行</button>'
+                : `<button class="btn-primary" id="submitComprehension" type="submit" ${canSubmit ? "" : "disabled"}>回答を提出</button>`}
+            </div>
+          </div>
+        </form>
+      </section>
+      ${renderComprehensionConfirmDialog()}
+      ${renderComprehensionLockDialog()}
+    </main>
+  `;
+  bindComprehensionHandlers();
+}
+
+function bindModalFocusTrap(dialogId, initialFocusId, onEscape = null) {
+  const dialog = document.getElementById(dialogId);
+  if (!dialog) return;
+  const focusable = Array.from(dialog.querySelectorAll("button:not([disabled]), input:not([disabled])"));
+  const initialFocus = document.getElementById(initialFocusId) || focusable[0];
+  dialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (onEscape) onEscape();
+      return;
+    }
+    if (event.key !== "Tab" || focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+  window.requestAnimationFrame(() => initialFocus?.focus());
+}
+
+function focusComprehensionQuestion(questionId) {
+  window.requestAnimationFrame(() => {
+    document.getElementById(`comprehension-question-${questionId}`)?.focus();
+  });
+}
+
+function evaluateComprehensionAnswers() {
+  state.comprehension.confirmOpen = false;
+  const submittedAnswers = { ...state.comprehension.answers };
+  const wrongQuestionIds = COMPREHENSION_QUESTIONS
+    .filter((question) => submittedAnswers[question.id] !== question.correctAnswer)
+    .map((question) => question.id);
+  const attemptsBefore = state.comprehension.attemptsRemaining;
+  const attemptsAfter = Math.max(0, attemptsBefore - 1);
+  const attemptLimit = state.comprehension.roundNumber === 1
+    ? COMPREHENSION_INITIAL_ATTEMPTS
+    : COMPREHENSION_RETRY_ATTEMPTS;
+  const attemptNumber = state.comprehension.attemptNumber + 1;
+  const attemptInRound = attemptLimit - attemptsBefore + 1;
+  const passed = wrongQuestionIds.length === 0;
+  const lockedAfter = !passed && attemptsAfter === 0;
+  const comprehensionEvent = {
+    event_id: createComprehensionEventId(),
+    question_set_version: COMPREHENSION_QUESTION_SET_VERSION,
+    sequence: state.comprehension.events.length + 1,
+    event_type: "submission",
+    outcome: passed ? "passed" : lockedAfter ? "locked" : "failed",
+    round_number: state.comprehension.roundNumber,
+    attempt_number: attemptNumber,
+    attempt_in_round: attemptInRound,
+    attempt_limit: attemptLimit,
+    attempts_before: attemptsBefore,
+    attempts_after: attemptsAfter,
+    answers: submittedAnswers,
+    incorrect_question_ids: wrongQuestionIds,
+    correct_count: COMPREHENSION_QUESTIONS.length - wrongQuestionIds.length,
+    passed,
+    locked_after: lockedAfter,
+    source_timestamp: new Date().toISOString(),
+  };
+  state.comprehension.attemptNumber = attemptNumber;
+
+  if (passed) {
+    state.comprehension.passed = true;
+    state.comprehension.locked = false;
+    state.comprehension.message = EMBEDDED_MODE
+      ? "すべて正解です。回答記録を保存しています。保存後、正式な実験を開始できます。"
+      : "すべて正解です。理解度確認が完了しました。続けて、正式な実験を開始してください。";
+    state.comprehension.messageType = EMBEDDED_MODE ? "info" : "success";
+    recordComprehensionEvent(comprehensionEvent);
+    state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+    render();
     return;
   }
-  const record = { payload: practiceFeedback.payload || {} };
+
+  wrongQuestionIds.forEach((questionId) => {
+    delete state.comprehension.answers[questionId];
+  });
+  state.comprehension.attemptsRemaining = attemptsAfter;
+  state.comprehension.locked = lockedAfter;
+  state.comprehension.message = "一部の回答が正しくありませんでした。正しくなかった問題の選択を解除しました。内容を確認し、もう一度回答してください。";
+  state.comprehension.messageType = "error";
+  state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+  recordComprehensionEvent(comprehensionEvent);
+  render();
+  if (!state.comprehension.locked) focusComprehensionQuestion(wrongQuestionIds[0]);
+}
+
+function bindComprehensionHandlers() {
+  bindPracticeNavigation();
+  document.getElementById("retryComprehensionSave")?.addEventListener("click", retryComprehensionSave);
+  document.getElementById("startFormalTasks")?.addEventListener("click", startFormalTasks);
+  document.querySelectorAll("[data-comprehension-question]").forEach((input) => {
+    input.addEventListener("change", () => {
+      state.comprehension.answers[input.dataset.comprehensionQuestion] = input.value;
+      const allAnswered = COMPREHENSION_QUESTIONS.every((question) => state.comprehension.answers[question.id]);
+      if (allAnswered) {
+        document.querySelector(".comprehension-help")?.remove();
+        if (state.comprehension.message === COMPREHENSION_INCOMPLETE_MESSAGE) {
+          state.comprehension.message = "";
+          state.comprehension.messageType = "";
+          const status = document.getElementById("comprehensionStatus");
+          if (status) {
+            status.textContent = "";
+            status.className = "comprehension-status";
+          }
+        }
+      }
+      saveState();
+    });
+  });
+
+  document.getElementById("comprehensionForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!state.practiceCompleted || state.comprehension.locked || state.comprehension.passed) return;
+    const unanswered = COMPREHENSION_QUESTIONS.filter((question) => !state.comprehension.answers[question.id]);
+    if (unanswered.length > 0) {
+      state.comprehension.message = COMPREHENSION_INCOMPLETE_MESSAGE;
+      state.comprehension.messageType = "error";
+      saveState();
+      render();
+      focusComprehensionQuestion(unanswered[0].id);
+      return;
+    }
+    state.comprehension.confirmOpen = true;
+    render();
+  });
+
+  document.getElementById("cancelComprehensionSubmit")?.addEventListener("click", () => {
+    state.comprehension.confirmOpen = false;
+    render();
+    window.requestAnimationFrame(() => document.getElementById("submitComprehension")?.focus());
+  });
+  document.getElementById("confirmComprehensionSubmit")?.addEventListener("click", evaluateComprehensionAnswers);
+  bindModalFocusTrap("comprehensionConfirmDialog", "cancelComprehensionSubmit", () => {
+    state.comprehension.confirmOpen = false;
+    render();
+    window.requestAnimationFrame(() => document.getElementById("submitComprehension")?.focus());
+  });
+
+  const unlockForm = document.getElementById("comprehensionUnlockForm");
+  const unlockInput = document.getElementById("comprehensionUnlockCode");
+  unlockInput?.addEventListener("input", () => {
+    unlockInput.value = unlockInput.value.replace(/\D/g, "").slice(0, 7);
+  });
+  unlockForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const code = unlockInput?.value || "";
+    if (code !== COMPREHENSION_UNLOCK_CODE) {
+      const error = document.getElementById("comprehensionUnlockError");
+      if (error) error.textContent = "コードが正しくありません。手を挙げたまま、実験担当者をお待ちください。";
+      if (unlockInput) unlockInput.value = "";
+      unlockInput?.focus();
+      return;
+    }
+    const nextRoundNumber = state.comprehension.roundNumber + 1;
+    const retainedAnswers = { ...state.comprehension.answers };
+    const unlockEvent = {
+      event_id: createComprehensionEventId(),
+      question_set_version: COMPREHENSION_QUESTION_SET_VERSION,
+      sequence: state.comprehension.events.length + 1,
+      event_type: "unlock",
+      outcome: "unlocked",
+      round_number: nextRoundNumber,
+      attempt_number: null,
+      attempt_in_round: null,
+      attempt_limit: COMPREHENSION_RETRY_ATTEMPTS,
+      attempts_before: 0,
+      attempts_after: COMPREHENSION_RETRY_ATTEMPTS,
+      answers: retainedAnswers,
+      incorrect_question_ids: [],
+      correct_count: Object.keys(retainedAnswers).length,
+      passed: false,
+      locked_after: false,
+      source_timestamp: new Date().toISOString(),
+    };
+    state.comprehension.locked = false;
+    state.comprehension.attemptsRemaining = COMPREHENSION_RETRY_ATTEMPTS;
+    state.comprehension.roundNumber = nextRoundNumber;
+    state.comprehension.message = "理解度確認に戻ります。説明を確認してから回答してください。回答の確認はあと2回できます。";
+    state.comprehension.messageType = "info";
+    state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+    recordComprehensionEvent(unlockEvent);
+    render();
+    const unanswered = COMPREHENSION_QUESTIONS.find((question) => !state.comprehension.answers[question.id]);
+    if (unanswered) focusComprehensionQuestion(unanswered.id);
+  });
+  bindModalFocusTrap("comprehensionLockDialog", "comprehensionUnlockCode");
+}
+
+function renderPracticeCiPaymentFeedback(payment) {
+  if (!payment) return "";
+
+  const wasParticipantChoice = payment.selectionMethod === "participant_choice";
+  const wasStep4Indifference = payment.selectionMethod === "random_indifferent_choice";
+  const heading = wasParticipantChoice
+    ? "あなたが選んだ選択肢をもとに抽選しました"
+    : wasStep4Indifference
+    ? "無差別のため、A と B からランダムに選びました"
+    : "この2つの選択肢は無差別として扱います";
+  const explanation = wasParticipantChoice
+    ? "あなたが選んだくじの確率に従って、獲得金額を決めました。"
+    : "A と B からランダムに1つを選び、選ばれたくじの確率に従って獲得金額を決めました。";
+  const selectedBadge = wasParticipantChoice ? "あなたが選んだ選択肢" : "ランダムに選ばれた選択肢";
+
+  return `
+    <section class="practice-ci-payment-feedback">
+      <h4>${heading}</h4>
+      <p>${explanation}</p>
+      <div class="practice-ci-payment-summary">
+        <div>
+          <span>抽選された選択肢</span>
+          <strong>選択肢${escapeHtml(payment.selectedOption)}</strong>
+          <small>${selectedBadge}</small>
+        </div>
+        <div>
+          <span>抽選結果</span>
+          <strong>${escapeHtml(formatOutcomeProbability(payment.probability))} の抽選で ${escapeHtml(formatYen(payment.rewardAmount))}</strong>
+        </div>
+      </div>
+      <div class="practice-ci-payment-reward">
+        <span>獲得金額</span>
+        <strong>${escapeHtml(formatYen(payment.rewardAmount))}</strong>
+      </div>
+    </section>
+  `;
+}
+
+function renderPracticeFeedback() {
+  const practiceFeedback = state.practiceFeedback;
+  const isFinalPractice = state.practiceStepIndex === PRACTICE_STEP_4;
+  let feedbackContent = "";
+  let feedbackHeading = "練習問題の回答";
+  let modeDescription = "この回答は練習用であり、研究データには保存されません。";
+
+  if (state.practiceStepIndex === PRACTICE_STEP_MPL && practiceFeedback?.feedback) {
+    const task = currentPracticeTask();
+    const record = { payload: practiceFeedback.payload || {} };
+    feedbackHeading = "この練習問題の結果";
+    modeDescription = "この抽選結果は練習用であり、報酬には含まれません。";
+    feedbackContent = `
+      <div class="step-label">練習 1 / ${PRACTICE_STEP_COUNT}</div>
+      <h3 class="question-title">${feedbackHeading}</h3>
+      ${renderFeedbackPaymentSummary(practiceFeedback.feedback)}
+      ${renderFeedbackTaskDetails(task, record, practiceFeedback.feedback)}
+      <p class="practice-feedback-note">練習問題の結果は保存されず、最終的な報酬にも含まれません。</p>
+    `;
+  } else if (state.practiceStepIndex === PRACTICE_STEP_1 && practiceFeedback?.kind === "step1") {
+    feedbackHeading = "Step 1 フィードバック";
+    feedbackContent = `
+      <div class="step-label">Step 1</div>
+      <h3 class="question-title">Step 1 フィードバック</h3>
+      <div class="practice-ci-option-list feedback">
+        <p><span class="practice-ci-option-label">選択肢A</span><strong>確率 20% で 100円</strong></p>
+        <p><span class="practice-ci-option-label">選択肢B</span><strong>確率 10% で ${escapeHtml(formatAmount(practiceFeedback.value, "JPY"))}</strong></p>
+      </div>
+      ${renderPracticeCiPaymentFeedback(practiceFeedback.payment)}
+      <p class="practice-feedback-note">ここでは正解・不正解はありません。確率の低い選択肢には100円以上を入力し、自分にとって同じくらい魅力的になる金額を答えます。</p>
+    `;
+  } else if (isFinalPractice && practiceFeedback?.kind === "step4") {
+    feedbackHeading = "Step 4 フィードバック";
+    const choiceLabels = {
+      X: "Aを好む",
+      Indifferent: "ほとんど無差別",
+      Y: "Bを好む",
+    };
+    feedbackContent = `
+      <div class="step-label">Step 4</div>
+      <h3 class="question-title">Step 4 フィードバック：${escapeHtml(choiceLabels[practiceFeedback.choice] || "")}</h3>
+      ${renderFixedStep4Display({ selectedChoice: practiceFeedback.choice, showStepLabel: false })}
+      ${renderPracticeCiPaymentFeedback(practiceFeedback.payment)}
+      <p class="practice-feedback-note">ここでは正解・不正解はありません。正式な課題でも自分の本当の好みに基づいて回答してください。</p>
+    `;
+  } else {
+    state.phase = "practice";
+    state.practiceFeedback = null;
+    saveState();
+    render();
+    return;
+  }
+
   app.innerHTML = `
     <main class="screen">
       <section class="mode-panel practice-mode">
-        <strong>練習問題の結果</strong>
-        <span>この抽選結果は練習用であり、報酬には含まれません。</span>
+        <strong>${feedbackHeading}</strong>
+        <span>${modeDescription}</span>
       </section>
       <section class="feedback-card practice-feedback-card">
-        <div class="step-label">練習の抽選結果</div>
-        <h3 class="question-title">この練習問題の結果</h3>
-        ${renderFeedbackPaymentSummary(feedback)}
-        ${renderFeedbackTaskDetails(task, record, feedback)}
-        <p class="practice-feedback-note">練習問題の結果は保存されず、最終的な報酬にも含まれません。</p>
+        ${feedbackContent}
         <div class="feedback-actions">
-          <button class="btn-primary" id="continueAfterPracticeFeedback" type="button">練習を終了</button>
+          ${isFinalPractice
+            ? '<button class="btn-secondary" id="redoPractice" type="button">練習をもう一度</button><button class="btn-primary" id="continueAfterPracticeFeedback" type="button">理解度確認へ</button>'
+            : '<button class="btn-primary" id="continueToNextPractice" type="button">次の練習問題へ</button>'}
         </div>
       </section>
     </main>
   `;
-  document.getElementById("continueAfterPracticeFeedback").addEventListener("click", finishPracticeFeedback);
+  document.getElementById("continueToNextPractice")?.addEventListener("click", advanceToNextPractice);
+  document.getElementById("redoPractice")?.addEventListener("click", resetPractice);
+  document.getElementById("continueAfterPracticeFeedback")?.addEventListener("click", finishPracticeFeedback);
+}
+
+function advanceToNextPractice() {
+  state.practiceStepIndex = Math.min(PRACTICE_STEP_4, state.practiceStepIndex + 1);
+  state.phase = "practice";
+  state.practicePanel = PRACTICE_PANEL_PRACTICE;
+  state.runtime = null;
+  state.taskTimedOut = false;
+  state.memoryChallenge = null;
+  state.practiceFeedback = null;
+  state.taskStartedAt = Date.now();
+  state.error = "";
+  saveState();
+  render();
+  scrollToTopAfterRender();
 }
 
 function resetPractice() {
   state.phase = "practice";
+  state.practicePanel = PRACTICE_PANEL_PRACTICE;
+  state.practiceCompleted = false;
+  state.practiceStepIndex = PRACTICE_STEP_MPL;
   state.runtime = null;
   state.taskTimedOut = false;
   state.memoryChallenge = null;
@@ -817,7 +1784,13 @@ function resetPractice() {
 }
 
 function finishPracticeFeedback() {
+  if (state.practiceStepIndex !== PRACTICE_STEP_4) {
+    advanceToNextPractice();
+    return;
+  }
   state.phase = "practiceSummary";
+  state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+  state.practiceCompleted = true;
   state.runtime = null;
   state.taskTimedOut = false;
   state.memoryChallenge = null;
@@ -830,8 +1803,22 @@ function finishPracticeFeedback() {
 }
 
 function startFormalTasks() {
+  if (!state.practiceCompleted || !state.comprehension.passed) {
+    state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+    state.comprehension.message = "練習問題と理解度確認を完了してください。";
+    state.comprehension.messageType = "error";
+    saveState();
+    render();
+    return;
+  }
+  if (!isComprehensionPassSaved()) {
+    state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+    retryComprehensionSave();
+    return;
+  }
   state.taskIndex = 0;
   state.practiceFeedback = null;
+  state.comprehension.confirmOpen = false;
   state.error = "";
   startCurrentTaskFlow();
 }
@@ -848,14 +1835,16 @@ function createTaskModes(blockOrTasks, participant = state.participant) {
     String(participant ?? ""),
     String(blockId ?? ""),
   ].join("|"));
-  // Every task is eligible; CP is not reserved away from the first displayed task.
   const randomizedIndexes = shuffle(Array.from({ length: taskCount }, (_, index) => index), random);
-  const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, randomizedIndexes.length);
-  const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, randomizedIndexes.length - timePressureCount);
-  randomizedIndexes.slice(0, timePressureCount).forEach((index) => {
+  // The first displayed formal task is never under time pressure; number-memory mode remains eligible.
+  const timePressureCandidates = randomizedIndexes.filter((index) => index !== 0);
+  const timePressureIndexes = timePressureCandidates.slice(0, TIME_PRESSURE_TASKS_PER_BLOCK);
+  const remainingIndexes = randomizedIndexes.filter((index) => !timePressureIndexes.includes(index));
+  const numberMemoryIndexes = remainingIndexes.slice(0, NUMBER_MEMORY_TASKS_PER_BLOCK);
+  timePressureIndexes.forEach((index) => {
     modes[index] = MODE_TIME_PRESSURE;
   });
-  randomizedIndexes.slice(timePressureCount, timePressureCount + numberMemoryCount).forEach((index) => {
+  numberMemoryIndexes.forEach((index) => {
     modes[index] = MODE_NUMBER_MEMORY;
   });
   return modes;
@@ -1000,8 +1989,8 @@ function currentPracticeTask() {
 
 function completePractice(task, payload) {
   const feedback = task && payload ? buildTaskFeedback(task, payload) : null;
-  state.practiceFeedback = feedback ? { payload, feedback } : null;
-  state.phase = feedback ? "practiceFeedback" : "practiceSummary";
+  state.practiceFeedback = { kind: "mpl", payload, feedback };
+  state.phase = "practiceFeedback";
   state.runtime = null;
   state.taskTimedOut = false;
   state.memoryChallenge = null;
@@ -2859,6 +3848,7 @@ function renderFinish() {
       consent_accepted_at: state.consentAcceptedAt,
       assignment: state.assignment,
       record_count: state.records.length,
+      comprehension_events: state.comprehension.events,
     });
   }
   if (!state.csvDownloaded) {
@@ -3179,11 +4169,11 @@ function runSmokeTest() {
     if (state.taskModes.join("|") !== createTaskModes(block, state.participant).join("|")) {
       failures.push(`${block.title} CP assignment is not reproducible for the same student and block`);
     }
-    const firstTaskCanReceiveCp = Array.from({ length: 24 }, (_, offset) => (
+    const firstTaskCanReceiveTimePressure = Array.from({ length: 24 }, (_, offset) => (
       createTaskModes(block, String(8888000 + blockIndex * 100 + offset))[0]
-    )).some((mode) => mode !== MODE_NORMAL);
-    if (!firstTaskCanReceiveCp) {
-      failures.push(`${block.title} first task was never eligible for CP in the seeded assignment check`);
+    )).some((mode) => mode === MODE_TIME_PRESSURE);
+    if (firstTaskCanReceiveTimePressure) {
+      failures.push(`${block.title} first task received time pressure in the seeded assignment check`);
     }
     block.tasks.forEach((task, taskIndex) => {
       state.taskIndex = taskIndex;
@@ -3282,9 +4272,8 @@ function expectedTaskCountForBlock(block) {
 
 function expectedTaskModeCounts(blockOrTaskCount) {
   const taskCount = typeof blockOrTaskCount === "number" ? blockOrTaskCount : blockOrTaskCount.tasks.length;
-  const pressureAssignable = Math.max(0, taskCount);
-  const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, pressureAssignable);
-  const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, pressureAssignable - timePressureCount);
+  const timePressureCount = Math.min(TIME_PRESSURE_TASKS_PER_BLOCK, Math.max(0, taskCount - 1));
+  const numberMemoryCount = Math.min(NUMBER_MEMORY_TASKS_PER_BLOCK, Math.max(0, taskCount - timePressureCount));
   return {
     [MODE_NORMAL]: taskCount - timePressureCount - numberMemoryCount,
     [MODE_TIME_PRESSURE]: timePressureCount,
@@ -3492,10 +4481,11 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
-if (new URLSearchParams(window.location.search).get("smoke") === "1") {
+if (SMOKE_MODE) {
   runSmokeTest();
 } else {
   initializeNavigationHistory();
   initializeKeyboardShortcuts();
+  initializeComprehensionSync();
   render();
 }

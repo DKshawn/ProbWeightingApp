@@ -10,7 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 try:
-    from .models.result import CiMirrorResult, CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
+    from .models.result import (
+        CiMirrorResult,
+        CiResult,
+        PwfBatch,
+        PwfComprehensionEventBatch,
+        SessionStartRequest,
+        UtilityElicitationBatch,
+    )
     from .storage import (
         DuplicateSubmissionError,
         StorageError,
@@ -24,15 +31,19 @@ try:
         get_ci_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
+        get_pwf_comprehension_events_by_session,
+        get_pwf_comprehension_events_by_student,
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
         has_other_completed_submission,
+        has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
         save_ci_mirror_result as save_ci_mirror_result_record,
         save_ci_result as save_ci_result_record,
         save_pwf_results as save_pwf_result_records,
+        save_pwf_comprehension_events as save_pwf_comprehension_event_records,
         save_utility_results as save_utility_result_records,
         storage_mode,
         touch_session,
@@ -40,7 +51,14 @@ try:
     )
     from .trial_generator import generate_all_trials
 except ImportError:
-    from models.result import CiMirrorResult, CiResult, PwfBatch, SessionStartRequest, UtilityElicitationBatch
+    from models.result import (
+        CiMirrorResult,
+        CiResult,
+        PwfBatch,
+        PwfComprehensionEventBatch,
+        SessionStartRequest,
+        UtilityElicitationBatch,
+    )
     from storage import (
         DuplicateSubmissionError,
         StorageError,
@@ -54,15 +72,19 @@ except ImportError:
         get_ci_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
+        get_pwf_comprehension_events_by_session,
+        get_pwf_comprehension_events_by_student,
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
         has_other_completed_submission,
+        has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
         save_ci_mirror_result as save_ci_mirror_result_record,
         save_ci_result as save_ci_result_record,
         save_pwf_results as save_pwf_result_records,
+        save_pwf_comprehension_events as save_pwf_comprehension_event_records,
         save_utility_results as save_utility_result_records,
         storage_mode,
         touch_session,
@@ -158,10 +180,20 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
         saved_ci_results = get_ci_results_by_session(session_id)
         ci_settlement = get_ci_settlement(session_id)
         saved_pwf_results = get_pwf_results_by_session(session_id)
+        comprehension_required = bool(session.get("pwf_comprehension_version"))
+        comprehension_passed = (
+            has_passed_pwf_comprehension(session_id)
+            if comprehension_required
+            else True
+        )
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    pwf_completed = bool(session.get("pwf_completed")) or bool(saved_ci_results)
+    pwf_completed = (
+        bool(session.get("pwf_completed")) and comprehension_passed
+        if comprehension_required
+        else bool(session.get("pwf_completed")) or bool(saved_ci_results)
+    )
 
     return {
         "session_id": session_id,
@@ -177,6 +209,9 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
         "session_status": session.get("status", "started"),
         "resumed": resumed,
         "pwf_completed": pwf_completed,
+        "pwf_comprehension_required": comprehension_required,
+        "pwf_comprehension_version": session.get("pwf_comprehension_version"),
+        "pwf_comprehension_passed": comprehension_passed,
         "saved_ci_results": saved_ci_results,
         "ci_settlement": ci_settlement,
         "saved_pwf_results": saved_pwf_results,
@@ -227,6 +262,7 @@ def start_session(req: SessionStartRequest):
             study_mode,
             experiment_mode,
             time_pressure_seconds,
+            req.pwf_comprehension_version,
         )
         session = get_session(session_id)
     except StorageError as exc:
@@ -291,9 +327,11 @@ def settle_ci_payment(session_id: str):
 # ---------------------------------------------------------------------------
 @app.post("/api/session/{session_id}/pwf-complete")
 def complete_pwf_session(session_id: str):
-    _session_can_accept_writes(session_id)
+    session = _session_can_accept_writes(session_id)
 
     try:
+        if session.get("pwf_comprehension_version") and not has_passed_pwf_comprehension(session_id):
+            raise HTTPException(status_code=409, detail="理解度確認の合格記録が保存されていません")
         mark_pwf_completed(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
@@ -340,6 +378,75 @@ def save_pwf_results(batch: PwfBatch):
         _raise_storage_http_error(exc)
 
     return {"status": "ok", "saved": len(batch.results)}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/pwf-comprehension-events
+# ---------------------------------------------------------------------------
+PWF_COMPREHENSION_EVENT_FIELDS = [
+    "question_set_version", "sequence", "event_type", "outcome", "round_number",
+    "attempt_number", "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+    "answers", "incorrect_question_ids", "correct_count", "passed", "locked_after",
+]
+
+
+def _parse_event_timestamp(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return None
+
+
+def _stored_comprehension_event_matches(stored: dict, requested: dict) -> bool:
+    if any(stored.get(field) != requested.get(field) for field in PWF_COMPREHENSION_EVENT_FIELDS):
+        return False
+    stored_timestamp = _parse_event_timestamp(stored.get("source_timestamp"))
+    requested_timestamp = _parse_event_timestamp(requested.get("source_timestamp"))
+    return stored_timestamp is not None and stored_timestamp == requested_timestamp
+
+
+@app.post("/api/pwf-comprehension-events")
+def save_pwf_comprehension_events(batch: PwfComprehensionEventBatch):
+    session_id = batch.events[0].session_id
+    _session_can_accept_writes(session_id)
+
+    records = [
+        {
+            **event.model_dump(),
+            "event_id": str(event.event_id),
+        }
+        for event in batch.events
+    ]
+    try:
+        save_pwf_comprehension_event_records(records)
+        stored_by_id = {
+            event["event_id"]: event
+            for event in get_pwf_comprehension_events_by_session(session_id)
+        }
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    confirmed_event_ids = []
+    confirmed_pass_event_ids = []
+    for record in records:
+        stored = stored_by_id.get(record["event_id"])
+        if stored is None or not _stored_comprehension_event_matches(stored, record):
+            raise HTTPException(
+                status_code=409,
+                detail="理解度確認イベントIDの保存内容が一致しません",
+            )
+        confirmed_event_ids.append(record["event_id"])
+        if record["event_type"] == "submission" and record["passed"]:
+            confirmed_pass_event_ids.append(record["event_id"])
+
+    return {
+        "status": "ok",
+        "saved": len(confirmed_event_ids),
+        "session_id": session_id,
+        "confirmed_event_ids": confirmed_event_ids,
+        "confirmed_pass_event_ids": confirmed_pass_event_ids,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +646,24 @@ PWF_FIELD_MAP = {
     "Timestamp": "Timestamp",
 }
 
+PWF_COMPREHENSION_QUESTION_IDS = [
+    "probability_meaning",
+    "lottery_tradeoff",
+    "standard_answer",
+    "indifference_input",
+    "serious_answers",
+    "indifferent_payment",
+]
+
+PWF_COMPREHENSION_CSV_COLUMNS = [
+    "event_id", "session_id", "StudentID", "StudentIDHash", "Name", "Gender", "study_mode",
+    "question_set_version", "sequence", "event_type", "outcome", "round_number",
+    "attempt_number", "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+    *[f"answer_{question_id}" for question_id in PWF_COMPREHENSION_QUESTION_IDS],
+    "incorrect_question_ids", "correct_count", "passed", "locked_after",
+    "answers_json", "source_timestamp", "Timestamp",
+]
+
 
 @app.get("/api/ci-results/{student_id}/csv")
 def download_ci_csv(student_id: str):
@@ -654,6 +779,64 @@ def download_pwf_csv(student_id: str):
         row["reward_penalty_reasons"] = row["reward_penalty_reasons"] or "; ".join(feedback.get("penalty_reasons", []) or [])
         row["reward_settled_at"] = row["reward_settled_at"] or feedback.get("settled_at", "")
         row["payload_json"] = json.dumps(row["payload_json"], ensure_ascii=False, separators=(",", ":"))
+        writer.writerow(row)
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/pwf-comprehension-events/{student_id}/csv")
+def download_pwf_comprehension_csv(student_id: str):
+    try:
+        student_events = get_pwf_comprehension_events_by_student(student_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    if not student_events:
+        raise HTTPException(status_code=404, detail="該当する理解度確認の記録が見つかりません")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"PWF_Comprehension_{student_id}_{timestamp}.csv"
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=PWF_COMPREHENSION_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for event in student_events:
+        answers = event.get("answers") if isinstance(event.get("answers"), dict) else {}
+        incorrect_ids = event.get("incorrect_question_ids")
+        incorrect_ids = incorrect_ids if isinstance(incorrect_ids, list) else []
+        row = {
+            "event_id": event.get("event_id", ""),
+            "session_id": event.get("session_id", ""),
+            "StudentID": event.get("student_id", ""),
+            "StudentIDHash": event.get("student_id_hash", ""),
+            "Name": event.get("name", ""),
+            "Gender": event.get("gender", ""),
+            "study_mode": event.get("study_mode", ""),
+            "question_set_version": event.get("question_set_version", ""),
+            "sequence": event.get("sequence", ""),
+            "event_type": event.get("event_type", ""),
+            "outcome": event.get("outcome", ""),
+            "round_number": event.get("round_number", ""),
+            "attempt_number": event.get("attempt_number", ""),
+            "attempt_in_round": event.get("attempt_in_round", ""),
+            "attempt_limit": event.get("attempt_limit", ""),
+            "attempts_before": event.get("attempts_before", ""),
+            "attempts_after": event.get("attempts_after", ""),
+            "incorrect_question_ids": ";".join(incorrect_ids),
+            "correct_count": event.get("correct_count", ""),
+            "passed": event.get("passed", ""),
+            "locked_after": event.get("locked_after", ""),
+            "answers_json": json.dumps(answers, ensure_ascii=False, separators=(",", ":")),
+            "source_timestamp": event.get("source_timestamp", ""),
+            "Timestamp": event.get("Timestamp", ""),
+        }
+        for question_id in PWF_COMPREHENSION_QUESTION_IDS:
+            row[f"answer_{question_id}"] = answers.get(question_id, "")
         writer.writerow(row)
 
     output.seek(0)

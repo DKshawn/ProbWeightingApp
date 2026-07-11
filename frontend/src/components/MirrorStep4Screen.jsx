@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-
-function formatPercentage(probability) {
-  return `${(Number(probability) * 100).toFixed(1).replace(/\.0$/, "")}%`;
-}
+import { formatCiProbability } from "../utils/formatCiProbability";
 
 export default function MirrorStep4Screen({ record, onNext, loading, error }) {
   const [isFinished, setIsFinished] = useState(false);
@@ -50,7 +47,7 @@ export default function MirrorStep4Screen({ record, onNext, loading, error }) {
         <div className="lottery-box lottery-x">
           <div className="lottery-label">選択肢A</div>
           <div className="lottery-detail">
-            確率 <strong>{formatPercentage(record.sN)}</strong> で
+            確率 <strong>{formatCiProbability(record.sN)}</strong> で
           </div>
           <div className="lottery-amount">{record.y_prime}円</div>
         </div>
@@ -60,7 +57,7 @@ export default function MirrorStep4Screen({ record, onNext, loading, error }) {
         <div className="lottery-box lottery-y">
           <div className="lottery-label">選択肢B</div>
           <div className="lottery-detail">
-            確率 <strong>{formatPercentage(record.rN)}</strong> で
+            確率 <strong>{formatCiProbability(record.rN)}</strong> で
           </div>
           <div className="lottery-amount">{record.x_prime}円</div>
         </div>
