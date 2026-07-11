@@ -2,10 +2,10 @@ import { useState } from "react";
 import ProgressBar from "./ProgressBar";
 import { formatCiProbability } from "../utils/formatCiProbability";
 
-const MIN_COMPOUND_PROBABILITY = 0.011;
+const COMPOUND_PROBABILITY_FLOOR = 0.01;
 
-function formatPercentInput(value) {
-  return (Math.ceil(value * 100) / 100).toString();
+function firstTenthAbove(value) {
+  return Number((Math.floor((value * 10) + 1e-9) / 10 + 0.1).toFixed(1));
 }
 
 export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, onNext }) {
@@ -15,15 +15,16 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
   const { r, x, N, block } = trial;
   const y = stepData.y;
   const trialNum = trialIndex + 1;
-  const minS = MIN_COMPOUND_PROBABILITY ** (1 / N);
+  const minS = COMPOUND_PROBABILITY_FLOOR ** (1 / N);
   const minSPercent = minS * 100;
-  const minSPercentLabel = formatPercentInput(minSPercent);
+  const minInputPercent = firstTenthAbove(minSPercent);
+  const minSPercentLabel = minInputPercent.toFixed(1);
 
   function handleSubmit(e) {
     e.preventDefault();
     const percent = parseFloat(s);
-    if (isNaN(percent) || percent < minSPercent || percent >= 100) {
-      setValidationError(`入力値 s について s^${N} ≥ 1.1% を満たす必要があります（s は ${minSPercentLabel}% 以上100%未満）。`);
+    if (isNaN(percent) || percent < minInputPercent || percent >= 100) {
+      setValidationError(`入力値 s について s^${N} > 1% を満たす必要があります（s は ${minSPercentLabel}% 以上100%未満）。`);
       return;
     }
     const val = percent / 100;
@@ -50,7 +51,7 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
           <p><span className="ci-option-label">選択肢A</span><strong>（確率 {formatCiProbability(r)} で {x}円）</strong></p>
           <p><span className="ci-option-label">選択肢B</span><strong>（確率 <span className="unknown">?</span>% で {y}円）</strong></p>
         </div>
-        <p>上の2つが無差別になるように、選択肢Bの確率を答えてください。入力値は s^{N} ≥ 1.1% を満たす必要があります。</p>
+        <p>上の2つが無差別になるように、選択肢Bの確率を答えてください。</p>
       </div>
 
       <form onSubmit={handleSubmit} className="input-form">
@@ -59,7 +60,7 @@ export default function Step2Screen({ trial, stepData, trialIndex, totalTrials, 
           <input
             id="s"
             type="number"
-            min={minSPercent}
+            min={minInputPercent}
             max="100"
             step="0.1"
             value={s}

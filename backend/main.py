@@ -386,6 +386,7 @@ def save_pwf_results(batch: PwfBatch):
 PWF_COMPREHENSION_EVENT_FIELDS = [
     "question_set_version", "sequence", "event_type", "outcome", "round_number",
     "attempt_number", "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+    "attempt_duration_ms", "question_response_times_ms",
     "answers", "incorrect_question_ids", "correct_count", "passed", "locked_after",
 ]
 
@@ -401,9 +402,12 @@ def _parse_event_timestamp(value):
 def _stored_comprehension_event_matches(stored: dict, requested: dict) -> bool:
     if any(stored.get(field) != requested.get(field) for field in PWF_COMPREHENSION_EVENT_FIELDS):
         return False
-    stored_timestamp = _parse_event_timestamp(stored.get("source_timestamp"))
-    requested_timestamp = _parse_event_timestamp(requested.get("source_timestamp"))
-    return stored_timestamp is not None and stored_timestamp == requested_timestamp
+    for field in ("source_timestamp", "attempt_started_at"):
+        stored_timestamp = _parse_event_timestamp(stored.get(field))
+        requested_timestamp = _parse_event_timestamp(requested.get(field))
+        if stored_timestamp != requested_timestamp:
+            return False
+    return _parse_event_timestamp(stored.get("source_timestamp")) is not None
 
 
 @app.post("/api/pwf-comprehension-events")
@@ -659,6 +663,9 @@ PWF_COMPREHENSION_CSV_COLUMNS = [
     "event_id", "session_id", "StudentID", "StudentIDHash", "Name", "Gender", "study_mode",
     "question_set_version", "sequence", "event_type", "outcome", "round_number",
     "attempt_number", "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+    "attempt_started_at", "attempt_duration_ms",
+    *[f"response_time_{question_id}_ms" for question_id in PWF_COMPREHENSION_QUESTION_IDS],
+    "question_response_times_ms_json",
     *[f"answer_{question_id}" for question_id in PWF_COMPREHENSION_QUESTION_IDS],
     "incorrect_question_ids", "correct_count", "passed", "locked_after",
     "answers_json", "source_timestamp", "Timestamp",
@@ -807,6 +814,7 @@ def download_pwf_comprehension_csv(student_id: str):
     writer.writeheader()
     for event in student_events:
         answers = event.get("answers") if isinstance(event.get("answers"), dict) else {}
+        question_response_times = event.get("question_response_times_ms") if isinstance(event.get("question_response_times_ms"), dict) else {}
         incorrect_ids = event.get("incorrect_question_ids")
         incorrect_ids = incorrect_ids if isinstance(incorrect_ids, list) else []
         row = {
@@ -827,6 +835,9 @@ def download_pwf_comprehension_csv(student_id: str):
             "attempt_limit": event.get("attempt_limit", ""),
             "attempts_before": event.get("attempts_before", ""),
             "attempts_after": event.get("attempts_after", ""),
+            "attempt_started_at": event.get("attempt_started_at", ""),
+            "attempt_duration_ms": event.get("attempt_duration_ms", ""),
+            "question_response_times_ms_json": json.dumps(question_response_times, ensure_ascii=False, separators=(",", ":")),
             "incorrect_question_ids": ";".join(incorrect_ids),
             "correct_count": event.get("correct_count", ""),
             "passed": event.get("passed", ""),
@@ -837,6 +848,7 @@ def download_pwf_comprehension_csv(student_id: str):
         }
         for question_id in PWF_COMPREHENSION_QUESTION_IDS:
             row[f"answer_{question_id}"] = answers.get(question_id, "")
+            row[f"response_time_{question_id}_ms"] = question_response_times.get(question_id, "")
         writer.writerow(row)
 
     output.seek(0)

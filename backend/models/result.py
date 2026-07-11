@@ -9,7 +9,8 @@ PWF_COMPREHENSION_SUPPORTED_VERSIONS = {
     "2026-07-11-comprehension-v1",
     PWF_COMPREHENSION_VERSION,
 }
-MIN_STEP2_COMPOUND_PROBABILITY = 0.011
+STEP2_COMPOUND_PROBABILITY_FLOOR = 0.01
+STEP2_COMPOUND_PROBABILITY_EPSILON = 1e-12
 
 
 class SessionStartRequest(BaseModel):
@@ -157,8 +158,8 @@ class CiResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_indifference_directions(self):
-        if self.s ** self.N < MIN_STEP2_COMPOUND_PROBABILITY:
-            raise ValueError("Step 2 compounded probability s^N must be at least 0.011 (1.1%)")
+        if self.s ** self.N <= STEP2_COMPOUND_PROBABILITY_FLOOR + STEP2_COMPOUND_PROBABILITY_EPSILON:
+            raise ValueError("Step 2 compounded probability s^N must be greater than 0.01 (1%)")
         if abs(self.r - self.p) < 1e-12:
             raise ValueError("CI trial invalid: r must differ from p")
         if abs(self.r - self.q) < 1e-12:
@@ -391,6 +392,9 @@ class PwfComprehensionEvent(BaseModel):
     attempt_limit: int = Field(ge=1, le=3)
     attempts_before: int = Field(ge=0, le=3)
     attempts_after: int = Field(ge=0, le=3)
+    attempt_started_at: Optional[datetime] = None
+    attempt_duration_ms: Optional[int] = Field(default=None, ge=0)
+    question_response_times_ms: dict[str, Optional[int]] = Field(default_factory=dict)
     answers: dict[str, str]
     incorrect_question_ids: list[str] = Field(default_factory=list)
     correct_count: int = Field(ge=0, le=6)
@@ -403,6 +407,13 @@ class PwfComprehensionEvent(BaseModel):
     def validate_source_timestamp(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("source_timestamp must include a timezone")
+        return value
+
+    @field_validator("attempt_started_at")
+    @classmethod
+    def validate_attempt_started_at(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("attempt_started_at must include a timezone")
         return value
 
     @model_validator(mode="after")
@@ -422,6 +433,13 @@ class PwfComprehensionEvent(BaseModel):
             if answer not in PWF_COMPREHENSION_ALLOWED_ANSWERS[question_id]:
                 raise ValueError(f"invalid answer for comprehension question: {question_id}")
 
+        response_time_ids = set(self.question_response_times_ms)
+        if not response_time_ids.issubset(question_ids):
+            raise ValueError("question_response_times_ms contains an unknown comprehension question")
+        for question_id, duration in self.question_response_times_ms.items():
+            if duration is not None and duration < 0:
+                raise ValueError(f"question_response_times_ms must be non-negative: {question_id}")
+
         incorrect_ids = list(self.incorrect_question_ids)
         if len(incorrect_ids) != len(set(incorrect_ids)) or not set(incorrect_ids).issubset(question_ids):
             raise ValueError("incorrect_question_ids must contain unique known question ids")
@@ -435,6 +453,17 @@ class PwfComprehensionEvent(BaseModel):
         if self.event_type == "submission":
             if answer_ids != question_ids:
                 raise ValueError("submission events must contain answers to all six comprehension questions")
+            if self.attempt_started_at is None or self.attempt_duration_ms is None:
+                raise ValueError("submission events require attempt timing")
+            if response_time_ids != question_ids:
+                raise ValueError("submission events require timings for all six comprehension questions")
+            if self.attempt_started_at > self.source_timestamp:
+                raise ValueError("attempt_started_at cannot be after source_timestamp")
+            if any(
+                duration is not None and duration > self.attempt_duration_ms
+                for duration in self.question_response_times_ms.values()
+            ):
+                raise ValueError("question response time cannot exceed attempt duration")
             if set(incorrect_ids) != set(computed_incorrect):
                 raise ValueError("incorrect_question_ids does not match the submitted answers")
             expected_limit = 3 if self.round_number == 1 else 2
@@ -459,6 +488,8 @@ class PwfComprehensionEvent(BaseModel):
 
         if self.round_number <= 1:
             raise ValueError("unlock events must start a retry round after the initial round")
+        if self.attempt_started_at is not None or self.attempt_duration_ms is not None or self.question_response_times_ms:
+            raise ValueError("unlock events cannot contain attempt timing")
         if self.outcome != "unlocked" or self.passed or self.locked_after:
             raise ValueError("unlock event outcome flags are inconsistent")
         if self.attempt_number is not None or self.attempt_in_round is not None:

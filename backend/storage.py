@@ -117,6 +117,7 @@ def _database_schema_ready(cur) -> bool:
             "event_id", "session_id", "question_set_version", "sequence",
             "event_type", "outcome", "round_number", "attempt_number",
             "attempt_in_round", "attempt_limit", "attempts_before", "attempts_after",
+            "attempt_started_at", "attempt_duration_ms", "question_response_times_ms",
             "answers", "incorrect_question_ids", "correct_count", "passed",
             "locked_after", "source_timestamp", "timestamp",
         },
@@ -370,6 +371,9 @@ def ensure_schema() -> None:
                     attempt_limit INTEGER NOT NULL CHECK (attempt_limit BETWEEN 1 AND 3),
                     attempts_before INTEGER NOT NULL CHECK (attempts_before BETWEEN 0 AND 3),
                     attempts_after INTEGER NOT NULL CHECK (attempts_after BETWEEN 0 AND 3),
+                    attempt_started_at TIMESTAMPTZ,
+                    attempt_duration_ms INTEGER CHECK (attempt_duration_ms IS NULL OR attempt_duration_ms >= 0),
+                    question_response_times_ms JSONB NOT NULL DEFAULT '{}'::jsonb,
                     answers JSONB NOT NULL,
                     incorrect_question_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                     correct_count INTEGER NOT NULL CHECK (correct_count BETWEEN 0 AND 6),
@@ -475,6 +479,11 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS memory_display_duration_ms INTEGER,
                     ADD COLUMN IF NOT EXISTS memory_pre_response_time_ms INTEGER,
                     ADD COLUMN IF NOT EXISTS memory_post_response_time_ms INTEGER;
+
+                ALTER TABLE pwf_comprehension_events
+                    ADD COLUMN IF NOT EXISTS attempt_started_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS attempt_duration_ms INTEGER,
+                    ADD COLUMN IF NOT EXISTS question_response_times_ms JSONB NOT NULL DEFAULT '{}'::jsonb;
 
                 ALTER TABLE utility_results
                     DROP CONSTRAINT IF EXISTS utility_results_choice_check;
@@ -1399,6 +1408,11 @@ def save_pwf_comprehension_events(records: list[dict[str, Any]]) -> None:
                     if isinstance(record.get("source_timestamp"), datetime)
                     else record.get("source_timestamp", "")
                 ),
+                "attempt_started_at": (
+                    record["attempt_started_at"].isoformat()
+                    if isinstance(record.get("attempt_started_at"), datetime)
+                    else record.get("attempt_started_at")
+                ),
             })
             existing_event_ids.add(record["event_id"])
         if records:
@@ -1415,6 +1429,7 @@ def save_pwf_comprehension_events(records: list[dict[str, Any]]) -> None:
                         event_id, session_id, question_set_version, sequence,
                         event_type, outcome, round_number, attempt_number,
                         attempt_in_round, attempt_limit, attempts_before, attempts_after,
+                        attempt_started_at, attempt_duration_ms, question_response_times_ms,
                         answers, incorrect_question_ids, correct_count, passed,
                         locked_after, source_timestamp, timestamp
                     )
@@ -1422,6 +1437,7 @@ def save_pwf_comprehension_events(records: list[dict[str, Any]]) -> None:
                         %(event_id)s, %(session_id)s, %(question_set_version)s, %(sequence)s,
                         %(event_type)s, %(outcome)s, %(round_number)s, %(attempt_number)s,
                         %(attempt_in_round)s, %(attempt_limit)s, %(attempts_before)s, %(attempts_after)s,
+                        %(attempt_started_at)s, %(attempt_duration_ms)s, %(question_response_times_ms)s,
                         %(answers)s, %(incorrect_question_ids)s, %(correct_count)s, %(passed)s,
                         %(locked_after)s, %(source_timestamp)s, %(timestamp)s
                     )
@@ -1430,6 +1446,7 @@ def save_pwf_comprehension_events(records: list[dict[str, Any]]) -> None:
                     [
                         {
                             **record,
+                            "question_response_times_ms": Jsonb(record["question_response_times_ms"]),
                             "answers": Jsonb(record["answers"]),
                             "incorrect_question_ids": Jsonb(record["incorrect_question_ids"]),
                         }
@@ -1456,7 +1473,7 @@ def _normalize_pwf_comprehension_event(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     normalized["event_id"] = str(normalized["event_id"])
     normalized["session_id"] = str(normalized["session_id"])
-    for field in ("source_timestamp", "timestamp", "Timestamp"):
+    for field in ("attempt_started_at", "source_timestamp", "timestamp", "Timestamp"):
         value = normalized.get(field)
         if isinstance(value, datetime):
             normalized[field] = value.isoformat()
@@ -1678,6 +1695,9 @@ def get_pwf_comprehension_events_by_session(session_id: str) -> list[dict[str, A
                     attempt_limit,
                     attempts_before,
                     attempts_after,
+                    attempt_started_at,
+                    attempt_duration_ms,
+                    question_response_times_ms,
                     answers,
                     incorrect_question_ids,
                     correct_count,
@@ -1733,30 +1753,6 @@ def _trial_count_from_session(session: dict[str, Any]) -> int:
     return len(trials) if isinstance(trials, list) else 0
 
 
-def _ci_mirrors_complete(results: list[dict[str, Any]], expected_trials: int) -> bool:
-    if expected_trials <= 0 or len(results) != expected_trials:
-        return False
-    for row in results:
-        choice = row.get("mirror_choice")
-        timed_out = row.get("mirror_timed_out")
-        if choice is None or timed_out is None or row.get("mirror_timestamp") is None:
-            return False
-        if row.get("mirror_left_option") != "Y" or row.get("mirror_right_option") != "X":
-            return False
-        if row.get("mirror_canonical_choice") != _canonical_mirror_choice(choice):
-            return False
-        if bool(timed_out) != (choice == "Timeout"):
-            return False
-        expected_satisfied = not bool(timed_out) and choice == "Indifferent"
-        if row.get("mirror_ci_satisfied") is not expected_satisfied:
-            return False
-    try:
-        mirror_orders = sorted(int(row["mirror_order"]) for row in results)
-    except (KeyError, TypeError, ValueError):
-        return False
-    return mirror_orders == list(range(1, expected_trials + 1))
-
-
 def _ci_option(display_option: str, canonical_option: str, probability: float, amount: float) -> dict[str, Any]:
     return {
         "display_option": display_option,
@@ -1809,16 +1805,6 @@ def _ci_decision_pool(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "options": [
                     _ci_option("A", "X", result["rN"], result["x_prime"]),
                     _ci_option("B", "Y", result["sN"], result["y_prime"]),
-                ],
-            },
-            {
-                "trial": trial,
-                "decision": "mirror_step4",
-                "response": result["mirror_choice"],
-                "canonical_response": result["mirror_canonical_choice"],
-                "options": [
-                    _ci_option("A", "Y", result["sN"], result["y_prime"]),
-                    _ci_option("B", "X", result["rN"], result["x_prime"]),
                 ],
             },
         ])
@@ -1891,11 +1877,9 @@ def create_ci_settlement(session_id: str) -> dict[str, Any]:
     saved_trials = {int(row["trial"]) for row in results}
     if expected_trials <= 0 or len(saved_trials) != expected_trials or len(results) != expected_trials:
         raise StorageError("CI results are not complete yet")
-    if not _ci_mirrors_complete(results, expected_trials):
-        raise StorageError("CI mirror results are not complete yet")
 
     decision_pool = _ci_decision_pool(results)
-    expected_decisions = expected_trials * 5
+    expected_decisions = expected_trials * 4
     if len(decision_pool) != expected_decisions:
         raise StorageError("CI decision pool is incomplete")
     selected = _resolve_ci_decision(random.choice(decision_pool))
@@ -1992,8 +1976,6 @@ def mark_session_completed_if_ready(session_id: str) -> bool:
     ci_results = get_ci_results_by_session(session_id)
     saved_trials = {int(row["trial"]) for row in ci_results}
     if len(saved_trials) < expected_trials:
-        return False
-    if not _ci_mirrors_complete(ci_results, expected_trials):
         return False
     if not get_ci_settlement(session_id):
         return False
@@ -2293,6 +2275,9 @@ def get_pwf_comprehension_events_by_student(student_id: str) -> list[dict[str, A
                     event.attempt_limit,
                     event.attempts_before,
                     event.attempts_after,
+                    event.attempt_started_at,
+                    event.attempt_duration_ms,
+                    event.question_response_times_ms,
                     event.answers,
                     event.incorrect_question_ids,
                     event.correct_count,

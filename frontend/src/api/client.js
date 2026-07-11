@@ -73,19 +73,6 @@ export async function saveCiResult(data) {
   return res.json();
 }
 
-export async function saveCiMirrorResult(data) {
-  const res = await fetch(`${BASE_URL}/api/ci-results/mirror`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(err, "追加比較の結果保存に失敗しました"));
-  }
-  return res.json();
-}
-
 export async function createCiSettlement(sessionId) {
   const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/ci-settlement`, {
     method: "POST",

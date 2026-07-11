@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { getCiCsvUrl, getPwfComprehensionCsvUrl, getPwfCsvUrl } from "../api/client";
 
+const NEXT_EXPERIMENT_URL = "https://rct-exp.vercel.app/?variant=Halevy_complexity_202607";
+
 const crc32Table = Array.from({ length: 256 }, (_, index) => {
   let crc = index;
   for (let bit = 0; bit < 8; bit += 1) {
@@ -12,6 +14,7 @@ const crc32Table = Array.from({ length: 256 }, (_, index) => {
 export default function FinishScreen({ studentId, includePwfComprehension = true }) {
   const [saving, setSaving] = useState(false);
   const [downloadError, setDownloadError] = useState("");
+  const [csvSaved, setCsvSaved] = useState(false);
   const ciCsvUrl = getCiCsvUrl(studentId);
   const pwfCsvUrl = getPwfCsvUrl(studentId);
   const pwfComprehensionCsvUrl = getPwfComprehensionCsvUrl(studentId);
@@ -219,6 +222,7 @@ export default function FinishScreen({ studentId, includePwfComprehension = true
     setDownloadError("");
     try {
       await saveCsvFiles();
+      setCsvSaved(true);
     } catch (error) {
       if (error?.name !== "AbortError") {
         setDownloadError(error?.message || "ZIPの保存に失敗しました");
@@ -226,6 +230,11 @@ export default function FinishScreen({ studentId, includePwfComprehension = true
     } finally {
       setSaving(false);
     }
+  }
+
+  function goToNextExperiment() {
+    if (!csvSaved) return;
+    window.location.assign(NEXT_EXPERIMENT_URL);
   }
 
   return (
@@ -240,6 +249,15 @@ export default function FinishScreen({ studentId, includePwfComprehension = true
           disabled={saving}
         >
           {saving ? "作成中..." : "ZIPをダウンロード"}
+        </button>
+        <p>{csvSaved ? "CSVを保存しました。次の実験へ進んでください。" : "CSVを保存すると、次の実験へ進めます。"}</p>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={goToNextExperiment}
+          disabled={!csvSaved || saving}
+        >
+          次の実験へ進む
         </button>
         {downloadError && <p className="error">{downloadError}</p>}
       </div>

@@ -11,7 +11,7 @@ const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
 // Bump this frozen design identifier whenever a protocol change should create a new CP assignment.
 const DESIGN_VERSION = "2026-07-11-pwf-cb-2-blocks-cp-seeded-first-task-no-tp-consent-gender";
-const STORAGE_SCHEMA_VERSION = "2026-07-11-comprehension-practice-v5";
+const STORAGE_SCHEMA_VERSION = "2026-07-12-comprehension-timing-v6";
 const CP_ASSIGNMENT_ALGORITHM = "fnv1a-mulberry32-v1";
 const CONSENT_VERSION = "2026-07-11-consent-form-v1";
 const GENDER_OPTIONS = ["male", "female"];
@@ -103,6 +103,8 @@ function createComprehensionState() {
     confirmOpen: false,
     attemptNumber: 0,
     roundNumber: 1,
+    attemptStartedAt: null,
+    questionResponseTimesMs: {},
     events: [],
     acknowledgedEventIds: [],
   };
@@ -472,6 +474,19 @@ function normalizeComprehensionState(value) {
   normalized.roundNumber = Number.isInteger(roundNumber) && roundNumber >= 1
     ? roundNumber
     : Math.max(1, 1 + normalized.events.filter((event) => event.event_type === "unlock").length);
+  const attemptStartedAt = Number(value.attemptStartedAt);
+  normalized.attemptStartedAt = Number.isFinite(attemptStartedAt) && attemptStartedAt > 0
+    ? attemptStartedAt
+    : null;
+  const questionResponseTimesMs = value.questionResponseTimesMs && typeof value.questionResponseTimesMs === "object"
+    ? value.questionResponseTimesMs
+    : {};
+  COMPREHENSION_QUESTIONS.forEach((question) => {
+    const duration = Number(questionResponseTimesMs[question.id]);
+    if (Number.isInteger(duration) && duration >= 0) {
+      normalized.questionResponseTimesMs[question.id] = duration;
+    }
+  });
   const eventIds = new Set(normalized.events.map((event) => event.event_id));
   normalized.acknowledgedEventIds = Array.isArray(value.acknowledgedEventIds)
     ? [...new Set(value.acknowledgedEventIds.filter((eventId) => eventIds.has(eventId)))]
@@ -510,6 +525,8 @@ function saveState() {
       messageType: state.comprehension.messageType,
       attemptNumber: state.comprehension.attemptNumber,
       roundNumber: state.comprehension.roundNumber,
+      attemptStartedAt: state.comprehension.attemptStartedAt,
+      questionResponseTimesMs: state.comprehension.questionResponseTimesMs,
       events: state.comprehension.events,
       acknowledgedEventIds: state.comprehension.acknowledgedEventIds,
     },
@@ -1403,6 +1420,7 @@ function renderComprehensionLockDialog() {
 }
 
 function renderComprehensionWindow() {
+  ensureComprehensionAttemptTiming();
   const allAnswered = COMPREHENSION_QUESTIONS.every((question) => state.comprehension.answers[question.id]);
   const canSubmit = state.practiceCompleted && !state.comprehension.locked && !state.comprehension.passed;
   const messageClass = state.comprehension.messageType ? ` ${state.comprehension.messageType}` : "";
@@ -1477,6 +1495,26 @@ function focusComprehensionQuestion(questionId) {
   });
 }
 
+function beginComprehensionAttempt() {
+  state.comprehension.attemptStartedAt = Date.now();
+  state.comprehension.questionResponseTimesMs = {};
+  return state.comprehension.attemptStartedAt;
+}
+
+function ensureComprehensionAttemptTiming() {
+  if (!state.practiceCompleted || state.comprehension.locked || state.comprehension.passed) return null;
+  const startedAt = Number(state.comprehension.attemptStartedAt);
+  if (Number.isFinite(startedAt) && startedAt > 0) return startedAt;
+  return beginComprehensionAttempt();
+}
+
+function comprehensionQuestionResponseTimesForEvent() {
+  return Object.fromEntries(COMPREHENSION_QUESTIONS.map((question) => {
+    const duration = state.comprehension.questionResponseTimesMs[question.id];
+    return [question.id, Number.isInteger(duration) && duration >= 0 ? duration : null];
+  }));
+}
+
 function evaluateComprehensionAnswers() {
   state.comprehension.confirmOpen = false;
   const submittedAnswers = { ...state.comprehension.answers };
@@ -1490,6 +1528,8 @@ function evaluateComprehensionAnswers() {
     : COMPREHENSION_RETRY_ATTEMPTS;
   const attemptNumber = state.comprehension.attemptNumber + 1;
   const attemptInRound = attemptLimit - attemptsBefore + 1;
+  const submittedAt = Date.now();
+  const attemptStartedAt = ensureComprehensionAttemptTiming() || submittedAt;
   const passed = wrongQuestionIds.length === 0;
   const lockedAfter = !passed && attemptsAfter === 0;
   const comprehensionEvent = {
@@ -1504,12 +1544,15 @@ function evaluateComprehensionAnswers() {
     attempt_limit: attemptLimit,
     attempts_before: attemptsBefore,
     attempts_after: attemptsAfter,
+    attempt_started_at: new Date(attemptStartedAt).toISOString(),
+    attempt_duration_ms: Math.max(0, submittedAt - attemptStartedAt),
+    question_response_times_ms: comprehensionQuestionResponseTimesForEvent(),
     answers: submittedAnswers,
     incorrect_question_ids: wrongQuestionIds,
     correct_count: COMPREHENSION_QUESTIONS.length - wrongQuestionIds.length,
     passed,
     locked_after: lockedAfter,
-    source_timestamp: new Date().toISOString(),
+    source_timestamp: new Date(submittedAt).toISOString(),
   };
   state.comprehension.attemptNumber = attemptNumber;
 
@@ -1529,6 +1572,7 @@ function evaluateComprehensionAnswers() {
   wrongQuestionIds.forEach((questionId) => {
     delete state.comprehension.answers[questionId];
   });
+  beginComprehensionAttempt();
   state.comprehension.attemptsRemaining = attemptsAfter;
   state.comprehension.locked = lockedAfter;
   state.comprehension.message = "一部の回答が正しくありませんでした。正しくなかった問題の選択を解除しました。内容を確認し、もう一度回答してください。";
@@ -1546,6 +1590,14 @@ function bindComprehensionHandlers() {
   document.querySelectorAll("[data-comprehension-question]").forEach((input) => {
     input.addEventListener("change", () => {
       state.comprehension.answers[input.dataset.comprehensionQuestion] = input.value;
+      const attemptStartedAt = ensureComprehensionAttemptTiming();
+      const questionId = input.dataset.comprehensionQuestion;
+      if (
+        attemptStartedAt
+        && !Object.prototype.hasOwnProperty.call(state.comprehension.questionResponseTimesMs, questionId)
+      ) {
+        state.comprehension.questionResponseTimesMs[questionId] = Math.max(0, Date.now() - attemptStartedAt);
+      }
       const allAnswered = COMPREHENSION_QUESTIONS.every((question) => state.comprehension.answers[question.id]);
       if (allAnswered) {
         document.querySelector(".comprehension-help")?.remove();
@@ -1620,6 +1672,9 @@ function bindComprehensionHandlers() {
       attempt_limit: COMPREHENSION_RETRY_ATTEMPTS,
       attempts_before: 0,
       attempts_after: COMPREHENSION_RETRY_ATTEMPTS,
+      attempt_started_at: null,
+      attempt_duration_ms: null,
+      question_response_times_ms: {},
       answers: retainedAnswers,
       incorrect_question_ids: [],
       correct_count: Object.keys(retainedAnswers).length,
@@ -1633,6 +1688,7 @@ function bindComprehensionHandlers() {
     state.comprehension.message = "理解度確認に戻ります。説明を確認してから回答してください。回答の確認はあと2回できます。";
     state.comprehension.messageType = "info";
     state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
+    beginComprehensionAttempt();
     recordComprehensionEvent(unlockEvent);
     render();
     const unanswered = COMPREHENSION_QUESTIONS.find((question) => !state.comprehension.answers[question.id]);
@@ -1762,6 +1818,7 @@ function advanceToNextPractice() {
   state.memoryChallenge = null;
   state.practiceFeedback = null;
   state.taskStartedAt = Date.now();
+  beginComprehensionAttempt();
   state.error = "";
   saveState();
   render();

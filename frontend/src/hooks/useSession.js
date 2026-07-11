@@ -2,7 +2,6 @@ import { useCallback, useRef, useState } from "react";
 import {
   completePwfSession,
   createCiSettlement,
-  saveCiMirrorResult,
   saveCiResult,
   savePwfComprehensionEvents,
   savePwfResults,
@@ -31,47 +30,9 @@ function firstUnansweredTrialIndex(trials, savedTrialResults) {
   return index < 0 ? trials.length : index;
 }
 
-function hashSeed(value) {
-  let hash = 2166136261;
-  for (const character of String(value)) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function buildMirrorTrialOrder(trials, sessionId) {
-  const order = trials.map((_, index) => index);
-  let state = hashSeed(`${sessionId}:ci-mirror-v1`);
-
-  for (let index = order.length - 1; index > 0; index -= 1) {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    const swapIndex = state % (index + 1);
-    [order[index], order[swapIndex]] = [order[swapIndex], order[index]];
-  }
-
-  if (order.length > 1 && order.every((trialIndex, index) => trialIndex === index)) {
-    order.push(order.shift());
-  }
-
-  return order;
-}
-
-function firstUnansweredMirrorOrderIndex(mirrorTrialOrder, trials, savedTrialResults) {
-  const savedByTrial = new Map(
-    (savedTrialResults || []).map((row) => [Number(row.trial), row]),
-  );
-  const index = mirrorTrialOrder.findIndex((trialIndex) => {
-    const trialNumber = Number(trials[trialIndex]?.trial);
-    return savedByTrial.get(trialNumber)?.mirror_choice == null;
-  });
-  return index < 0 ? mirrorTrialOrder.length : index;
-}
-
-function stepForTrialResume(trials, trialIndex, mirrorOrderIndex, ciSettlement) {
+function stepForTrialResume(trials, trialIndex, ciSettlement) {
   if (!trials.length) return 5;
   if (trialIndex >= trials.length) {
-    if (mirrorOrderIndex < trials.length) return 10;
     return ciSettlement ? 7 : 9;
   }
   if (trialIndex > 0 && trials[trialIndex]?.block !== trials[trialIndex - 1]?.block) return 6;
@@ -104,9 +65,7 @@ export function useSession() {
   const [ciRecords, setCiRecords] = useState([]);
   const [trials, setTrials] = useState([]);
   const [currentTrialIndex, setCurrentTrialIndex] = useState(0);
-  const [mirrorTrialOrder, setMirrorTrialOrder] = useState([]);
-  const [currentMirrorOrderIndex, setCurrentMirrorOrderIndex] = useState(0);
-  const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement, 10=CI randomized comparison
+  const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement
   const [stepData, setStepData] = useState({});
   const [ciSettlement, setCiSettlement] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -121,11 +80,6 @@ export function useSession() {
   const comprehensionSaveErrorRef = useRef(null);
 
   const currentTrial = trials[currentTrialIndex] ?? null;
-  const currentMirrorTrialIndex = mirrorTrialOrder[currentMirrorOrderIndex] ?? null;
-  const currentMirrorTrial = currentMirrorTrialIndex == null ? null : trials[currentMirrorTrialIndex] ?? null;
-  const currentMirrorRecord = currentMirrorTrial
-    ? ciRecords.find((record) => Number(record.trial) === Number(currentMirrorTrial.trial)) ?? null
-    : null;
   const totalTrials = trials.length;
 
   function beginOperation() {
@@ -190,12 +144,6 @@ export function useSession() {
         const pwfCompleted = Boolean(data.pwf_completed)
           || (!comprehensionRequired && savedTrialResults.length > 0);
         const resumeTrialIndex = firstUnansweredTrialIndex(resolvedTrials, savedTrialResults);
-        const resolvedMirrorTrialOrder = buildMirrorTrialOrder(resolvedTrials, data.session_id);
-        const resumeMirrorOrderIndex = firstUnansweredMirrorOrderIndex(
-          resolvedMirrorTrialOrder,
-          resolvedTrials,
-          savedTrialResults,
-        );
         const session = {
           sessionId: data.session_id,
           studentId: sid,
@@ -211,8 +159,6 @@ export function useSession() {
           savedTrialResults,
           savedPwfResults,
           pwfCompleted,
-          mirrorTrialOrder: resolvedMirrorTrialOrder,
-          resumeMirrorOrderIndex,
         };
 
         pwfSessionRef.current = session;
@@ -230,15 +176,12 @@ export function useSession() {
         setPwfRecords(session.savedPwfResults);
         setCiRecords(session.savedTrialResults);
         setCiSettlement(savedCiSettlement);
-        setMirrorTrialOrder(session.mirrorTrialOrder);
-        setCurrentMirrorOrderIndex(session.resumeMirrorOrderIndex);
         setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
         if (pwfCompleted) {
           setCurrentStep(stepForTrialResume(
             resolvedTrials,
             resumeTrialIndex,
-            session.resumeMirrorOrderIndex,
             savedCiSettlement,
           ));
         }
@@ -389,13 +332,10 @@ export function useSession() {
       session.pwfCompleted = true;
       const resumeTrialIndex = firstUnansweredTrialIndex(session.trials, session.savedTrialResults);
       setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(session.trials.length - 1, 0)));
-      setMirrorTrialOrder(session.mirrorTrialOrder);
-      setCurrentMirrorOrderIndex(session.resumeMirrorOrderIndex);
       setStepData({});
       setCurrentStep(stepForTrialResume(
         session.trials,
         resumeTrialIndex,
-        session.resumeMirrorOrderIndex,
         null,
       ));
       return true;
@@ -432,8 +372,7 @@ export function useSession() {
       setCurrentStep(6);
     } else if (nextIndex >= totalTrials) {
       setStepData({});
-      setCurrentMirrorOrderIndex(0);
-      setCurrentStep(10);
+      setCurrentStep(9);
     } else {
       setCurrentTrialIndex(nextIndex);
       setStepData({});
@@ -499,52 +438,6 @@ export function useSession() {
     }
   }
 
-  async function submitMirrorStep4(choice, timing = {}) {
-    if (!currentMirrorTrial || !currentMirrorRecord) return false;
-
-    setLoading(true);
-    setError(null);
-    const timedOut = Boolean(timing.timedOut || choice === "Timeout");
-    const mirrorCanonicalChoice = choice === "X" ? "Y" : choice === "Y" ? "X" : choice;
-    const mirrorResult = {
-      session_id: sessionId,
-      trial: currentMirrorTrial.trial,
-      mirror_order: currentMirrorOrderIndex + 1,
-      mirror_choice: choice,
-      mirror_response_time_ms: timing.responseTimeMs ?? null,
-      mirror_timed_out: timedOut,
-    };
-
-    try {
-      await saveCiMirrorResult(mirrorResult);
-      setCiRecords((previous) => previous.map((record) => (
-        Number(record.trial) === Number(currentMirrorTrial.trial)
-          ? {
-              ...record,
-              ...mirrorResult,
-              mirror_left_option: "Y",
-              mirror_right_option: "X",
-              mirror_canonical_choice: mirrorCanonicalChoice,
-              mirror_ci_satisfied: !timedOut && choice === "Indifferent",
-            }
-          : record
-      )));
-
-      const nextMirrorOrderIndex = currentMirrorOrderIndex + 1;
-      if (nextMirrorOrderIndex >= mirrorTrialOrder.length) {
-        setCurrentStep(9);
-      } else {
-        setCurrentMirrorOrderIndex(nextMirrorOrderIndex);
-      }
-      return true;
-    } catch (e) {
-      setError(e.message);
-      return false;
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function startNextBlock() {
     setCurrentStep(1);
   }
@@ -582,9 +475,6 @@ export function useSession() {
     currentTrialIndex,
     currentStep,
     currentTrial,
-    currentMirrorOrderIndex,
-    currentMirrorTrial,
-    currentMirrorRecord,
     stepData,
     ciSettlement,
     pwfComprehensionRequired,
@@ -598,7 +488,6 @@ export function useSession() {
     submitStep2,
     submitStep3,
     submitStep4,
-    submitMirrorStep4,
     startNextBlock,
     loadCiSettlement,
     continueToPwfSettlement,

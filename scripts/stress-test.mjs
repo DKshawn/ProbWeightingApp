@@ -108,11 +108,11 @@ function loadPwfBlocks(appFile) {
 
   const source = fs.readFileSync(appFile, "utf8");
   const sanitized = source.replace(
-    /if \(new URLSearchParams\(window\.location\.search\)[\s\S]*$/m,
+    /if \(SMOKE_MODE\) \{[\s\S]*$/m,
     "globalThis.__stress = { BASE_BLOCKS };",
   );
   const context = {
-    window: { location: { search: "" } },
+    window: { location: { search: "?embedded=1" } },
     document: { getElementById: () => ({ innerHTML: "" }) },
     URLSearchParams,
     console: { log() {}, warn() {}, error() {} },
@@ -385,6 +385,8 @@ async function completePwf(baseUrl, session, timeoutMs) {
 }
 
 async function saveComprehensionPass(baseUrl, session, timeoutMs) {
+  const submittedAt = new Date();
+  const attemptStartedAt = new Date(submittedAt.getTime() - 12_000);
   return requestJson(
     baseUrl,
     "/api/pwf-comprehension-events",
@@ -404,6 +406,16 @@ async function saveComprehensionPass(baseUrl, session, timeoutMs) {
           attempt_limit: 3,
           attempts_before: 3,
           attempts_after: 2,
+          attempt_started_at: attemptStartedAt.toISOString(),
+          attempt_duration_ms: 12_000,
+          question_response_times_ms: {
+            probability_meaning: 1_000,
+            lottery_tradeoff: 2_000,
+            standard_answer: 3_000,
+            indifference_input: 5_000,
+            serious_answers: 7_000,
+            indifferent_payment: 9_000,
+          },
           answers: {
             probability_meaning: "b",
             lottery_tradeoff: "d",
@@ -416,7 +428,7 @@ async function saveComprehensionPass(baseUrl, session, timeoutMs) {
           correct_count: 6,
           passed: true,
           locked_after: false,
-          source_timestamp: new Date().toISOString(),
+          source_timestamp: submittedAt.toISOString(),
         }],
       }),
     },
@@ -476,34 +488,6 @@ async function saveCi(baseUrl, session, trial, trialIndex, timeoutMs) {
   );
 }
 
-const DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER = [2, 0, 4, 1, 3];
-
-function deterministicMirrorTrials(trials) {
-  if (trials.length !== DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER.length) {
-    throw new Error(`Expected 5 CI trials for mirror submission, received ${trials.length}`);
-  }
-  return DETERMINISTIC_MIRROR_TRIAL_INDEX_ORDER.map((index) => trials[index]);
-}
-
-async function saveCiMirror(baseUrl, session, trial, mirrorOrder, timeoutMs) {
-  return requestJson(
-    baseUrl,
-    "/api/ci-results/mirror",
-    {
-      method: "POST",
-      body: JSON.stringify({
-        session_id: session.sessionId,
-        trial: trial.trial,
-        mirror_order: mirrorOrder,
-        mirror_choice: "Indifferent",
-        mirror_response_time_ms: 1100 + mirrorOrder,
-        mirror_timed_out: false,
-      }),
-    },
-    timeoutMs,
-  );
-}
-
 async function createCiSettlement(baseUrl, session, timeoutMs) {
   return requestJson(
     baseUrl,
@@ -530,6 +514,12 @@ async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, t
   }
   if (comprehensionRows !== 1) {
     throw new Error(`Comprehension CSV row count ${comprehensionRows}, expected 1`);
+  }
+  const comprehensionHeaders = comprehensionCsv.split(/\r?\n/, 1)[0].split(",");
+  for (const header of ["attempt_duration_ms", "response_time_probability_meaning_ms"]) {
+    if (!comprehensionHeaders.includes(header)) {
+      throw new Error(`Comprehension CSV is missing required timing column: ${header}`);
+    }
   }
   return {
     ciRows,
@@ -628,7 +618,7 @@ async function main() {
   printStage(summarizeStage("prep PWF + CI except final", prepResults));
 
   const readyFinishers = finishingSessions.filter((_, index) => prepResults[index]?.ok);
-  console.log(`Phase 3: completing final CI trial, 5 mirrors, and settlement for ${readyFinishers.length} participants concurrently`);
+  console.log(`Phase 3: completing final CI trial and settlement for ${readyFinishers.length} participants concurrently`);
   const finalResults = await Promise.all(readyFinishers.map(({ session }) => timed(
     `complete-ci:${session.studentId}`,
     async () => {
@@ -640,16 +630,11 @@ async function main() {
         options.timeoutMs,
       );
 
-      const mirrorTrials = deterministicMirrorTrials(session.trials);
-      for (let i = 0; i < mirrorTrials.length; i += 1) {
-        await saveCiMirror(options.baseUrl, session, mirrorTrials[i], i + 1, options.timeoutMs);
-      }
-
       await createCiSettlement(options.baseUrl, session, options.timeoutMs);
-      return { finalCiRows: 1, mirrorRows: mirrorTrials.length, settlementWrites: 1 };
+      return { finalCiRows: 1, settlementWrites: 1 };
     },
   )));
-  printStage(summarizeStage("final CI + mirrors + settlement", finalResults));
+  printStage(summarizeStage("final CI + settlement", finalResults));
 
   let downloadResults = [];
   if (!options.skipDownloads) {
@@ -665,7 +650,7 @@ async function main() {
   const summaries = [
     summarizeStage("session/start", startResults),
     summarizeStage("prep PWF + CI except final", prepResults),
-    summarizeStage("final CI + mirrors + settlement", finalResults),
+    summarizeStage("final CI + settlement", finalResults),
     ...(options.skipDownloads ? [] : [summarizeStage("CSV concurrent download", downloadResults)]),
   ];
   const failedTotal = summaries.reduce((sum, summary) => sum + summary.failed, 0);
@@ -675,7 +660,7 @@ async function main() {
       sum + result.value.pwfRows + 2 + result.value.ciPreparedRows
     ), 0) +
     finalResults.filter((result) => result.ok).reduce((sum, result) => (
-      sum + result.value.finalCiRows + result.value.mirrorRows + result.value.settlementWrites
+      sum + result.value.finalCiRows + result.value.settlementWrites
     ), 0);
   console.log("Expected successful POST writes:", expectedApiWrites);
   console.log("Stress test result:", failedTotal === 0 ? "PASS" : "FAIL");
