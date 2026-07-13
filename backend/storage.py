@@ -14,7 +14,11 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool, PoolTimeout
 
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Vercel's Neon Marketplace resource currently injects the WPF connection as
+# ``New_DATABASE_URL``.  Keep the conventional name first so local and manual
+# deployments remain unchanged, while allowing the managed connection to work
+# without copying its secret into a second Vercel variable.
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("New_DATABASE_URL")
 ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
