@@ -24,8 +24,7 @@ try:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
-        find_completed_submission,
-        get_resume_session,
+        get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
@@ -36,7 +35,6 @@ try:
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
-        has_other_completed_submission,
         has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
@@ -65,8 +63,7 @@ except ImportError:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
-        find_completed_submission,
-        get_resume_session,
+        get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
@@ -77,7 +74,6 @@ except ImportError:
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
-        has_other_completed_submission,
         has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
@@ -149,32 +145,44 @@ def _session_not_found_error() -> None:
 
 def _session_can_accept_writes(session_id: str) -> dict:
     try:
-        session = get_session(session_id)
+        session = get_session(session_id, include_other_completed=True)
         if session is None:
             _session_not_found_error()
         if session.get("status") == "completed":
             _completed_submission_error()
-        if has_other_completed_submission(session_id):
+        if session.get("has_other_completed"):
             _completed_submission_error()
     except StorageError as exc:
         _raise_storage_http_error(exc)
     return session
 
 
-def _build_session_response(session: dict, *, resumed: bool) -> dict:
+def _build_session_response(
+    session: dict,
+    *,
+    resumed: bool,
+    include_saved_results: bool = True,
+) -> dict:
     session_id = session["session_id"]
-    try:
-        saved_ci_results = get_ci_results_by_session(session_id)
-        ci_settlement = get_ci_settlement(session_id)
-        saved_pwf_results = get_pwf_results_by_session(session_id)
-        comprehension_required = bool(session.get("pwf_comprehension_version"))
-        comprehension_passed = (
-            has_passed_pwf_comprehension(session_id)
-            if comprehension_required
-            else True
-        )
-    except StorageError as exc:
-        _raise_storage_http_error(exc)
+    comprehension_required = bool(session.get("pwf_comprehension_version"))
+    if include_saved_results:
+        try:
+            saved_ci_results = get_ci_results_by_session(session_id)
+            ci_settlement = get_ci_settlement(session_id)
+            saved_pwf_results = get_pwf_results_by_session(session_id)
+            comprehension_passed = (
+                has_passed_pwf_comprehension(session_id)
+                if comprehension_required
+                else True
+            )
+        except StorageError as exc:
+            _raise_storage_http_error(exc)
+    else:
+        # A brand-new session cannot have any persisted trial results yet.
+        saved_ci_results = []
+        ci_settlement = None
+        saved_pwf_results = []
+        comprehension_passed = not comprehension_required
 
     pwf_completed = (
         bool(session.get("pwf_completed")) and comprehension_passed
@@ -226,11 +234,10 @@ def start_session(req: SessionStartRequest):
     experiment_mode, time_pressure_seconds = _assign_experiment_mode(student_id)
 
     try:
-        if find_completed_submission(student_id, study_mode):
-            _completed_submission_error()
-
-        resume_session = get_resume_session(student_id, study_mode)
+        resume_session = get_existing_session_for_start(student_id, study_mode)
         if resume_session:
+            if resume_session.get("status") == "completed":
+                _completed_submission_error()
             if mark_session_completed_if_ready(resume_session["session_id"]):
                 _completed_submission_error()
             update_session_enrollment(
@@ -244,7 +251,7 @@ def start_session(req: SessionStartRequest):
             return _build_session_response(resume_session, resumed=True)
 
         session_id = str(uuid.uuid4())
-        create_session(
+        session = create_session(
             session_id,
             student_id,
             name,
@@ -260,11 +267,10 @@ def start_session(req: SessionStartRequest):
             time_pressure_seconds,
             req.pwf_comprehension_version,
         )
-        session = get_session(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return _build_session_response(session, resumed=False)
+    return _build_session_response(session, resumed=False, include_saved_results=False)
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +302,14 @@ def save_ci_result(result: CiResult):
         })
     try:
         save_ci_result_record(record)
-        session_completed = mark_session_completed_if_ready(result.session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return {"status": "ok", "session_completed": session_completed}
+    # Settlement is the only point at which the session can be complete.  The
+    # settlement endpoint runs the full completion check after it is written;
+    # doing that expensive check after every individual CI trial needlessly
+    # multiplies database reads under concurrent traffic.
+    return {"status": "ok", "session_completed": False}
 
 
 # ---------------------------------------------------------------------------

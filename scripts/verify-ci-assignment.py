@@ -41,7 +41,7 @@ PILOT_CELLS = {
 def create_test_session(index: int, study_mode: str) -> dict:
     session_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc)
-    trials = create_session(
+    created_session = create_session(
         session_id=session_id,
         student_id=f"balanced-{study_mode}-{index:03d}",
         name="CI assignment verification",
@@ -56,7 +56,7 @@ def create_test_session(index: int, study_mode: str) -> dict:
     )
     session = get_session(session_id)
     assert session is not None
-    assert session["trials"] == trials
+    assert session["trials"] == created_session["trials"]
     return session
 
 
