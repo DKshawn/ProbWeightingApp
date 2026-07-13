@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
-from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -17,15 +16,6 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
 _SCHEMA_LOCK_ID = 440866261
-_SESSION_ID_TABLES = (
-    "experiment_sessions",
-    "ci_results",
-    "ci_settlements",
-    "utility_results",
-    "pwf_results",
-    "pwf_comprehension_events",
-)
-_SESSION_ID_CHILD_TABLES = _SESSION_ID_TABLES[1:]
 _RETRYABLE_DB_ERRORS = (
     psycopg.errors.DeadlockDetected,
     psycopg.errors.SerializationFailure,
@@ -150,81 +140,6 @@ def _database_schema_ready(cur) -> bool:
     )
 
 
-def _session_id_column_types(cur) -> dict[str, str]:
-    """Return the underlying PostgreSQL type for existing session_id columns."""
-    cur.execute(
-        """
-        SELECT table_name, udt_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = ANY(%s)
-          AND column_name = 'session_id'
-        """,
-        (list(_SESSION_ID_TABLES),),
-    )
-    return {row["table_name"]: row["udt_name"] for row in cur.fetchall()}
-
-
-def _add_session_id_foreign_key_if_safe(cur, table_name: str) -> None:
-    """Add an FK only where the existing parent and child types are compatible."""
-    column_types = _session_id_column_types(cur)
-    if (
-        column_types.get("experiment_sessions") is None
-        or column_types.get(table_name) != column_types["experiment_sessions"]
-    ):
-        return
-
-    cur.execute(
-        """
-        SELECT EXISTS (
-            SELECT 1
-            FROM information_schema.key_column_usage AS kcu
-            JOIN information_schema.table_constraints AS tc
-              ON tc.constraint_schema = kcu.constraint_schema
-             AND tc.constraint_name = kcu.constraint_name
-             AND tc.table_name = kcu.table_name
-            WHERE kcu.table_schema = 'public'
-              AND kcu.table_name = %s
-              AND kcu.column_name = 'session_id'
-              AND tc.constraint_type = 'FOREIGN KEY'
-        ) AS has_foreign_key
-        """,
-        (table_name,),
-    )
-    if cur.fetchone()["has_foreign_key"]:
-        return
-
-    cur.execute(
-        sql.SQL(
-            """
-            SELECT COUNT(*) AS orphan_count
-            FROM {} AS child
-            LEFT JOIN experiment_sessions AS parent
-              ON parent.session_id = child.session_id
-            WHERE parent.session_id IS NULL
-            """
-        ).format(sql.Identifier(table_name))
-    )
-    if int(cur.fetchone()["orphan_count"]) != 0:
-        return
-
-    cur.execute(
-        sql.SQL(
-            "ALTER TABLE {} ADD CONSTRAINT {} "
-            "FOREIGN KEY (session_id) REFERENCES experiment_sessions(session_id) ON DELETE CASCADE"
-        ).format(
-            sql.Identifier(table_name),
-            sql.Identifier(f"{table_name}_session_id_fkey"),
-        )
-    )
-
-
-def _ensure_compatible_session_id_foreign_keys(cur) -> None:
-    """Restore FKs for compatible legacy schemas without changing stored IDs."""
-    for child_table in _SESSION_ID_CHILD_TABLES:
-        _add_session_id_foreign_key_if_safe(cur, child_table)
-
-
 def _backfill_student_id_hashes(cur) -> None:
     """Populate the new anonymized identifier for rows saved before this column existed."""
     table_keys = (
@@ -266,9 +181,12 @@ def ensure_schema() -> None:
 
     with _connect() as conn:
         with conn.cursor() as cur:
+            if _database_schema_ready(cur):
+                _schema_ready = True
+                return
+
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
             if _database_schema_ready(cur):
-                _ensure_compatible_session_id_foreign_keys(cur)
                 _schema_ready = True
                 return
 
@@ -297,7 +215,7 @@ def ensure_schema() -> None:
 
                 CREATE TABLE IF NOT EXISTS ci_results (
                     id BIGSERIAL PRIMARY KEY,
-                    session_id UUID NOT NULL,
+                    session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -343,7 +261,7 @@ def ensure_schema() -> None:
                 );
 
                 CREATE TABLE IF NOT EXISTS ci_settlements (
-                    session_id UUID PRIMARY KEY,
+                    session_id UUID PRIMARY KEY REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -357,7 +275,7 @@ def ensure_schema() -> None:
 
                 CREATE TABLE IF NOT EXISTS utility_results (
                     id BIGSERIAL PRIMARY KEY,
-                    session_id UUID NOT NULL,
+                    session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -388,7 +306,7 @@ def ensure_schema() -> None:
 
                 CREATE TABLE IF NOT EXISTS pwf_results (
                     id BIGSERIAL PRIMARY KEY,
-                    session_id UUID NOT NULL,
+                    session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     student_id TEXT NOT NULL,
                     student_id_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -442,7 +360,7 @@ def ensure_schema() -> None:
 
                 CREATE TABLE IF NOT EXISTS pwf_comprehension_events (
                     event_id UUID PRIMARY KEY,
-                    session_id UUID NOT NULL,
+                    session_id UUID NOT NULL REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
                     question_set_version TEXT NOT NULL,
                     sequence INTEGER NOT NULL CHECK (sequence >= 1),
                     event_type TEXT NOT NULL CHECK (event_type IN ('submission', 'unlock')),
@@ -638,7 +556,6 @@ def ensure_schema() -> None:
                     WHERE status = 'completed';
                 """
             )
-            _ensure_compatible_session_id_foreign_keys(cur)
             _backfill_student_id_hashes(cur)
         conn.commit()
     _schema_ready = True
