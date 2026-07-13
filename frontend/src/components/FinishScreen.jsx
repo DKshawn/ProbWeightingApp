@@ -250,7 +250,7 @@ export default function FinishScreen({ studentId, includePwfComprehension = true
         >
           {saving ? "作成中..." : "ZIPをダウンロード"}
         </button>
-        <p>{csvSaved ? "CSVを保存しました。次の実験へ進んでください。" : "CSVを保存すると、次の実験へ進めます。"}</p>
+        <p>{csvSaved ? "ZIPを保存しました。次の実験へ進んでください。" : "ZIPを保存すると、次の実験へ進めます。"}</p>
         <button
           type="button"
           className="btn-primary"

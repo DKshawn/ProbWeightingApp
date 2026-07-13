@@ -7,7 +7,7 @@ import { performance } from "node:perf_hooks";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:5174";
 const DEFAULT_START_COUNT = 150;
-const DEFAULT_FINISH_COUNT = 100;
+const DEFAULT_FINISH_COUNT = 150;
 const DEFAULT_SETUP_CONCURRENCY = 25;
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_STUDY_MODE = "full";
@@ -28,6 +28,10 @@ function parseArgs(argv) {
     verifyResume: false,
     checkpointId: null,
     checkpointOnly: false,
+    skipColdStartProbe: false,
+    coldStartWaitSeconds: 0,
+    coldStartId: null,
+    reportPath: null,
     dryRun: false,
   };
 
@@ -52,6 +56,10 @@ function parseArgs(argv) {
     else if (arg === "--verify-resume") options.verifyResume = true;
     else if (arg === "--checkpoint-id") options.checkpointId = positiveInt(next(), arg);
     else if (arg === "--checkpoint-only") options.checkpointOnly = true;
+    else if (arg === "--skip-cold-start-probe") options.skipColdStartProbe = true;
+    else if (arg === "--cold-start-wait-seconds") options.coldStartWaitSeconds = nonnegativeInt(next(), arg);
+    else if (arg === "--cold-start-id") options.coldStartId = positiveInt(next(), arg);
+    else if (arg === "--report-path") options.reportPath = path.resolve(next());
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--help" || arg === "-h") {
       printHelp();
@@ -67,14 +75,11 @@ function parseArgs(argv) {
   if (options.finishCount > options.startCount) {
     throw new Error("--finish-count cannot exceed --start-count");
   }
-  if (options.verifyResume && options.idStart && !options.checkpointId) {
-    options.checkpointId = options.idStart + options.startCount;
-  }
-  if (options.verifyResume && !options.checkpointId) {
-    throw new Error("--verify-resume requires --checkpoint-id when --id-start is not provided");
-  }
   if (options.checkpointOnly && !options.verifyResume) {
     throw new Error("--checkpoint-only requires --verify-resume");
+  }
+  if (options.checkpointOnly && !options.checkpointId) {
+    throw new Error("--checkpoint-only requires --checkpoint-id");
   }
   options.baseUrl = options.baseUrl.replace(/\/+$/, "");
   return options;
@@ -84,6 +89,14 @@ function positiveInt(value, label) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function nonnegativeInt(value, label) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
   }
   return parsed;
 }
@@ -103,9 +116,18 @@ Options:
   --study-mode full|pilot    Study mode sent to /api/session/start. Default: ${DEFAULT_STUDY_MODE}
   --id-start N               First fake 7-digit student id. Default: timestamp-based 9xxxxxx
   --skip-downloads           Do not fetch final CI/PWF CSV files.
+  --skip-cold-start-probe    Skip the first-request /api/session/start latency probe.
+  --cold-start-wait-seconds N
+                             Keep this process idle before the first-request probe. Default: 0.
+                             Vercel does not expose a guaranteed cold-start flag; this is a
+                             first-request-after-idle proxy measurement.
+  --cold-start-id N          Separate fake ID for the first-request probe. Defaults to the ID
+                             immediately after the main range.
   --verify-resume            After all main participants pass, verify PWF and CI checkpoint recovery.
-  --checkpoint-id N          Separate fake student ID for --verify-resume. Defaults to id-start + start-count.
+  --checkpoint-id N          Separate fake student ID for --verify-resume. Defaults to the ID after the
+                             cold-start probe (or after the main range when the probe is skipped).
   --checkpoint-only          Run only the PWF/CI checkpoint recovery flow for --checkpoint-id.
+  --report-path PATH         Write a JSON report with timings and outcomes.
   --dry-run                  Validate configuration without calling the API or writing data.
   --yes                      Required for non-localhost targets.
 `);
@@ -184,30 +206,46 @@ function assignmentForStudent(studentId, blocks) {
 }
 
 async function requestJson(baseUrl, pathName, options, timeoutMs) {
-  const text = await requestText(baseUrl, pathName, options, timeoutMs);
-  if (!text) return {};
-  return JSON.parse(text);
+  const response = await requestResponse(baseUrl, pathName, options, timeoutMs);
+  if (!response.text) return {};
+  return JSON.parse(response.text);
 }
 
 async function requestText(baseUrl, pathName, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const response = await requestResponse(baseUrl, pathName, options, timeoutMs);
+  return response.text;
+}
+
+async function requestResponse(baseUrl, pathName, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const { allowNotFound = false, ...fetchOptions } = options;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const startedAt = performance.now();
   try {
     const response = await fetch(`${baseUrl}${pathName}`, {
-      ...options,
+      ...fetchOptions,
       signal: controller.signal,
       headers: {
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
-        ...(options.headers || {}),
+        ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
+        ...(fetchOptions.headers || {}),
       },
     });
     const text = await response.text();
     const durationMs = performance.now() - startedAt;
-    if (!response.ok) {
+    if (!response.ok && !(allowNotFound && response.status === 404)) {
       throw new Error(`HTTP ${response.status} ${response.statusText} at ${pathName}: ${text.slice(0, 240)}`);
     }
-    return text;
+    return {
+      text,
+      durationMs,
+      status: response.status,
+      notFound: response.status === 404,
+      headers: {
+        vercelId: response.headers.get("x-vercel-id") || "",
+        serverTiming: response.headers.get("server-timing") || "",
+        cache: response.headers.get("x-vercel-cache") || "",
+      },
+    };
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error(`Timeout after ${timeoutMs}ms at ${pathName}`);
@@ -246,7 +284,7 @@ async function runLimited(items, concurrency, worker) {
 async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
   const name = `stress-${studentId}`;
   const gender = "male";
-  const data = await requestJson(
+  const response = await requestResponse(
     baseUrl,
     "/api/session/start",
     {
@@ -263,6 +301,7 @@ async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
     },
     timeoutMs,
   );
+  const data = response.text ? JSON.parse(response.text) : {};
   return {
     studentId,
     name,
@@ -277,6 +316,11 @@ async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
     pwfCompleted: Boolean(data.pwf_completed),
     savedPwfResults: data.saved_pwf_results || [],
     savedCiResults: data.saved_ci_results || [],
+    request: {
+      durationMs: Math.round(response.durationMs),
+      status: response.status,
+      ...response.headers,
+    },
   };
 }
 
@@ -299,6 +343,99 @@ function assertResumedSession(session, expectedSessionId, label) {
   if (session.sessionId !== expectedSessionId) {
     throw new Error(`${label} returned a different session ID.`);
   }
+}
+
+function formatSeconds(milliseconds) {
+  return `${(milliseconds / 1000).toFixed(3)}s`;
+}
+
+function pause(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function normalizeStudentId(value, label) {
+  const numeric = Number(value);
+  if (!Number.isInteger(numeric) || numeric < 1 || numeric > 9999999) {
+    throw new Error(`${label} must be a 7-digit student ID value between 1 and 9999999`);
+  }
+  return String(numeric).padStart(7, "0");
+}
+
+async function probeColdStart(baseUrl, studentId, studyMode, timeoutMs, waitSeconds) {
+  if (waitSeconds > 0) {
+    console.log(`Cold-start proxy: keeping this process idle for ${waitSeconds}s before the first /api/session/start request`);
+    await pause(waitSeconds * 1000);
+  }
+
+  const first = await timed(
+    `cold-first:${studentId}`,
+    () => startSession(baseUrl, studentId, studyMode, timeoutMs),
+  );
+  if (!first.ok) throw first.error;
+  assertFreshSession(first.value, "cold-start probe");
+
+  const followUp = await timed(
+    `cold-follow-up:${studentId}`,
+    () => startSession(baseUrl, studentId, studyMode, timeoutMs),
+  );
+  if (!followUp.ok) throw followUp.error;
+  assertResumedSession(followUp.value, first.value.sessionId, "cold-start follow-up");
+
+  const result = {
+    studentId,
+    idleSeconds: waitSeconds,
+    firstRequestMs: Math.round(first.durationMs),
+    firstRequestSeconds: Number((first.durationMs / 1000).toFixed(3)),
+    followUpRequestMs: Math.round(followUp.durationMs),
+    followUpRequestSeconds: Number((followUp.durationMs / 1000).toFixed(3)),
+    firstVercelId: first.value.request.vercelId,
+    followUpVercelId: followUp.value.request.vercelId,
+    firstServerTiming: first.value.request.serverTiming,
+    followUpServerTiming: followUp.value.request.serverTiming,
+  };
+  console.log(
+    `cold-start proxy (/api/session/start): first=${result.firstRequestMs}ms (${formatSeconds(first.durationMs)}), `
+    + `follow-up=${result.followUpRequestMs}ms (${formatSeconds(followUp.durationMs)}), `
+    + `idle=${waitSeconds}s`,
+  );
+  if (result.firstVercelId || result.followUpVercelId) {
+    console.log(`  Vercel request IDs: first=${result.firstVercelId || "n/a"}, follow-up=${result.followUpVercelId || "n/a"}`);
+  }
+  console.log("  Note: Vercel does not expose a definitive cold-start flag, so this is the first-request-after-idle proxy rather than proof of an evicted function instance.");
+  return result;
+}
+
+async function preflightStudentIds(baseUrl, studentIds, timeoutMs, concurrency) {
+  const checks = await runLimited(
+    studentIds,
+    concurrency,
+    async (studentId) => timed(`preflight:${studentId}`, async () => {
+      const [ciCsv, pwfCsv, comprehensionCsv] = await Promise.all([
+        requestText(baseUrl, `/api/ci-results/${encodeURIComponent(studentId)}/csv`, { allowNotFound: true }, timeoutMs),
+        requestText(baseUrl, `/api/pwf-results/${encodeURIComponent(studentId)}/csv`, { allowNotFound: true }, timeoutMs),
+        requestText(baseUrl, `/api/pwf-comprehension-events/${encodeURIComponent(studentId)}/csv`, { allowNotFound: true }, timeoutMs),
+      ]);
+      const existingRows = {
+        ci: countCsvRows(ciCsv),
+        pwf: countCsvRows(pwfCsv),
+        comprehension: countCsvRows(comprehensionCsv),
+      };
+      if (Object.values(existingRows).some((count) => count > 0)) {
+        throw new Error(`existing saved rows found: CI=${existingRows.ci}, PWF=${existingRows.pwf}, comprehension=${existingRows.comprehension}`);
+      }
+      return existingRows;
+    }),
+  );
+  const summary = summarizeStage("fresh-ID preflight", checks);
+  printStage(summary);
+  if (summary.failed > 0) {
+    const savedDataFailure = summary.failures.some((failure) => failure.message.startsWith("existing saved rows found:"));
+    if (savedDataFailure) {
+      throw new Error("Some test IDs already have saved data. Use unused fake IDs or delete only the prior synthetic test rows before running this scenario.");
+    }
+    throw new Error("Fresh-ID preflight could not reach every CSV endpoint. Resolve the request failures before starting the write test.");
+  }
+  return summary;
 }
 
 function feedbackPayload(amount = 100) {
@@ -672,6 +809,12 @@ function printStage(summary) {
   }
 }
 
+function writeReport(reportPath, report) {
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  console.log("Stress-test report:", reportPath);
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!isLocalTarget(options.baseUrl) && !options.yes) {
@@ -680,11 +823,25 @@ async function main() {
 
   const blocks = loadPwfBlocks(options.appFile);
   const ids = options.checkpointOnly ? [] : fakeStudentIds(options.startCount, options.idStart);
-  const checkpointStudentId = options.checkpointId
-    ? String(options.checkpointId).padStart(7, "0")
-    : null;
-  if (!options.checkpointOnly && checkpointStudentId && ids.includes(checkpointStudentId)) {
-    throw new Error("--checkpoint-id must not overlap with the main test student IDs.");
+  const lastMainStudentId = ids.length ? Number(ids[ids.length - 1]) : null;
+  const coldStartStudentId = options.checkpointOnly || options.skipColdStartProbe
+    ? null
+    : normalizeStudentId(options.coldStartId ?? lastMainStudentId + 1, "--cold-start-id");
+  const checkpointStudentId = options.checkpointOnly
+    ? normalizeStudentId(options.checkpointId, "--checkpoint-id")
+    : options.verifyResume
+      ? normalizeStudentId(
+        options.checkpointId ?? lastMainStudentId + (coldStartStudentId ? 2 : 1),
+        "--checkpoint-id",
+      )
+      : null;
+  const allTestIds = [
+    ...ids,
+    ...(coldStartStudentId ? [coldStartStudentId] : []),
+    ...(checkpointStudentId ? [checkpointStudentId] : []),
+  ];
+  if (new Set(allTestIds).size !== allTestIds.length) {
+    throw new Error("The main range, --cold-start-id, and --checkpoint-id must not overlap.");
   }
   console.log("Stress test target:", options.baseUrl);
   console.log("Study mode:", options.studyMode);
@@ -696,6 +853,7 @@ async function main() {
   console.log("PWF blocks:", blocks.map((block) => `${block.title}/${block.id}:${block.tasks.length}`).join(", "));
   if (options.dryRun) {
     console.log("Dry run: no API requests were sent and no data was written.");
+    if (coldStartStudentId) console.log("Cold-start probe student ID:", coldStartStudentId);
     if (checkpointStudentId) console.log("Checkpoint student ID:", checkpointStudentId);
     return;
   }
@@ -710,6 +868,30 @@ async function main() {
     console.log("Checkpoint recovery passed:", JSON.stringify(checkpointResult.value));
     return;
   }
+
+  let coldStartResult = null;
+  if (coldStartStudentId) {
+    console.log(`Phase 0: measuring the first /api/session/start request with ${coldStartStudentId}`);
+    coldStartResult = await probeColdStart(
+      options.baseUrl,
+      coldStartStudentId,
+      options.studyMode,
+      options.timeoutMs,
+      options.coldStartWaitSeconds,
+    );
+  }
+
+  const preflightIds = [
+    ...ids,
+    ...(checkpointStudentId ? [checkpointStudentId] : []),
+  ];
+  console.log(`Preflight: checking that ${preflightIds.length} main/checkpoint IDs have no previously saved result rows`);
+  const preflightSummary = await preflightStudentIds(
+    options.baseUrl,
+    preflightIds,
+    options.timeoutMs,
+    options.setupConcurrency,
+  );
 
   console.log(`Phase 1: starting ${ids.length} sessions concurrently`);
 
@@ -780,6 +962,7 @@ async function main() {
   }
 
   const summaries = [
+    preflightSummary,
     summarizeStage("session/start", startResults),
     summarizeStage("prep PWF + CI except final", prepResults),
     summarizeStage("final CI + settlement", finalResults),
@@ -797,7 +980,7 @@ async function main() {
   console.log("Expected successful POST writes:", expectedApiWrites);
   if (options.verifyResume) {
     if (failedTotal > 0) {
-      console.log("Checkpoint recovery: SKIPPED because the main 50-participant submission test failed.");
+      console.log("Checkpoint recovery: SKIPPED because the main submission test failed.");
       failedTotal += 1;
     } else {
       console.log(`Phase 5: verifying checkpoint recovery with ${checkpointStudentId}`);
@@ -811,11 +994,41 @@ async function main() {
           options.timeoutMs,
         ),
       );
-      printStage(summarizeStage("checkpoint recovery", [checkpointResult]));
+      const checkpointSummary = summarizeStage("checkpoint recovery", [checkpointResult]);
+      printStage(checkpointSummary);
+      summaries.push(checkpointSummary);
       if (!checkpointResult.ok) failedTotal += 1;
     }
   }
-  console.log("Stress test result:", failedTotal === 0 ? "PASS" : "FAIL");
+  const report = {
+    generatedAt: new Date().toISOString(),
+    target: options.baseUrl,
+    studyMode: options.studyMode,
+    activePwfBlocks: blocks.map((block) => ({
+      id: block.id,
+      title: block.title,
+      taskCount: block.tasks.length,
+    })),
+    testIds: {
+      mainRange: `${ids[0]}..${ids[ids.length - 1]}`,
+      coldStartProbe: coldStartStudentId,
+      checkpoint: checkpointStudentId,
+    },
+    scenario: {
+      simultaneousStarts: options.startCount,
+      simultaneousFinishes: readyFinishers.length,
+      preparatoryWriteConcurrency: options.setupConcurrency,
+      csvDownloadsChecked: !options.skipDownloads,
+      resumeChecked: options.verifyResume,
+      coldStartProxyIdleSeconds: options.coldStartWaitSeconds,
+    },
+    coldStartProxy: coldStartResult,
+    expectedSuccessfulPostWrites: expectedApiWrites,
+    stages: summaries,
+    passed: failedTotal === 0,
+  };
+  if (options.reportPath) writeReport(options.reportPath, report);
+  console.log("Stress test result:", report.passed ? "PASS" : "FAIL");
   if (failedTotal > 0) process.exitCode = 1;
 }
 

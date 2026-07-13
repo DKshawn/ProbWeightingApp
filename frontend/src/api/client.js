@@ -84,6 +84,17 @@ export async function createCiSettlement(sessionId) {
   return res.json();
 }
 
+export async function createPwfSettlement(sessionId) {
+  const res = await fetch(`${BASE_URL}/api/session/${encodeURIComponent(sessionId)}/pwf-settlement`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(err, "PWF 最終支払額の抽選に失敗しました"));
+  }
+  return res.json();
+}
+
 export async function completePwfSession(sessionId) {
   let res;
   try {

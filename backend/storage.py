@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import random
 import threading
@@ -34,6 +35,7 @@ _RETRYABLE_DB_ERRORS = (
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_ci_results: list[dict[str, Any]] = []
 _memory_ci_settlements: dict[str, dict[str, Any]] = {}
+_memory_pwf_settlements: dict[str, dict[str, Any]] = {}
 _memory_utility_results: list[dict[str, Any]] = []
 _memory_pwf_results: list[dict[str, Any]] = []
 _memory_pwf_comprehension_events: list[dict[str, Any]] = []
@@ -119,6 +121,11 @@ def _database_schema_ready(cur) -> bool:
             "session_id", "student_id", "student_id_hash", "name", "study_mode",
             "selected_trial", "selected_trial_amount", "payment_rule",
             "selected_trial_payments", "settled_at",
+        },
+        "pwf_settlements": {
+            "session_id", "student_id", "student_id_hash", "name", "study_mode",
+            "selected_pwf_trial", "selected_pwf_amount", "payment_rule",
+            "selected_pwf_payment", "settled_at",
         },
         "utility_results": {
             "session_id", "student_id", "student_id_hash", "name", "study_mode", "experiment_mode",
@@ -323,6 +330,19 @@ def ensure_schema() -> None:
                     selected_trial_amount DOUBLE PRECISION NOT NULL,
                     payment_rule TEXT NOT NULL,
                     selected_trial_payments JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    settled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS pwf_settlements (
+                    session_id UUID PRIMARY KEY REFERENCES experiment_sessions(session_id) ON DELETE CASCADE,
+                    student_id TEXT NOT NULL,
+                    student_id_hash TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    study_mode TEXT NOT NULL DEFAULT 'full',
+                    selected_pwf_trial INTEGER NOT NULL,
+                    selected_pwf_amount DOUBLE PRECISION NOT NULL,
+                    payment_rule TEXT NOT NULL,
+                    selected_pwf_payment JSONB NOT NULL DEFAULT '{}'::jsonb,
                     settled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
 
@@ -1879,6 +1899,17 @@ def _normalize_ci_settlement(row: dict[str, Any] | None) -> dict[str, Any] | Non
     return normalized
 
 
+def _normalize_pwf_settlement(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    normalized = dict(row)
+    settled_at = normalized.get("settled_at")
+    if isinstance(settled_at, datetime):
+        normalized["settled_at"] = settled_at.isoformat()
+    normalized["session_id"] = str(normalized["session_id"])
+    return normalized
+
+
 def get_ci_settlement(session_id: str) -> dict[str, Any] | None:
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         settlement = _memory_ci_settlements.get(session_id)
@@ -1907,6 +1938,36 @@ def get_ci_settlement(session_id: str) -> dict[str, Any] | None:
             )
             row = cur.fetchone()
     return _normalize_ci_settlement(row)
+
+
+def get_pwf_settlement(session_id: str) -> dict[str, Any] | None:
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        settlement = _memory_pwf_settlements.get(session_id)
+        return _normalize_pwf_settlement(settlement) if settlement else None
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    session_id::text,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    study_mode,
+                    selected_pwf_trial,
+                    selected_pwf_amount,
+                    payment_rule,
+                    selected_pwf_payment,
+                    settled_at
+                FROM pwf_settlements
+                WHERE session_id = %s
+                """,
+                (session_id,),
+            )
+            row = cur.fetchone()
+    return _normalize_pwf_settlement(row)
 
 
 def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
@@ -2347,6 +2408,129 @@ def create_ci_settlement(session_id: str) -> dict[str, Any]:
     normalized = _normalize_ci_settlement(row)
     if normalized is None:
         raise StorageError("CI final settlement could not be saved")
+    return normalized
+
+
+def _pwf_settlement_candidate(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Build the server-owned payout candidate for one settled PWF task."""
+    payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    feedback = payload.get("feedback") if isinstance(payload.get("feedback"), dict) else {}
+    try:
+        reward_amount = float(feedback.get("total_amount"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(reward_amount):
+        return None
+
+    pwf_trial = record.get("pwf_trial")
+    try:
+        pwf_trial = int(pwf_trial)
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "pwf_trial": pwf_trial,
+        "task_id": str(record.get("task_id") or ""),
+        "block_id": str(record.get("block_id") or ""),
+        "block_title": str(record.get("block_title") or ""),
+        "task_mode": str(record.get("task_mode") or ""),
+        "reward_payment_rule": str(feedback.get("payment_rule") or ""),
+        "reward_selected_item_index": feedback.get("selected_item_index", ""),
+        "reward_selected_item_label": str(feedback.get("selected_item_label") or ""),
+        "reward_amount": reward_amount,
+    }
+
+
+def create_pwf_settlement(session_id: str) -> dict[str, Any]:
+    """Randomly select exactly one saved PWF task and persist that selection."""
+    existing = get_pwf_settlement(session_id)
+    if existing:
+        return existing
+
+    session = get_session(session_id, include_other_completed=True)
+    if not session:
+        raise StorageError("PWF session was not found")
+    if not session.get("pwf_completed"):
+        raise StorageError("PWF results are not complete yet")
+
+    records = get_pwf_results_by_session(session_id)
+    candidates = [_pwf_settlement_candidate(record) for record in records]
+    if not candidates or any(candidate is None for candidate in candidates):
+        raise StorageError("PWF results do not all contain a settled task payment")
+
+    selected = random.choice(candidates)
+    settlement = {
+        "session_id": session_id,
+        "student_id": session["student_id"],
+        "student_id_hash": session["student_id_hash"],
+        "name": session["name"],
+        "study_mode": session["study_mode"],
+        "selected_pwf_trial": selected["pwf_trial"],
+        "selected_pwf_amount": selected["reward_amount"],
+        "payment_rule": "random_single_pwf_task",
+        "selected_pwf_payment": selected,
+        "settled_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        stored = _memory_pwf_settlements.setdefault(session_id, settlement)
+        return _normalize_pwf_settlement(stored) or settlement
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pwf_settlements (
+                    session_id, student_id, student_id_hash, name, study_mode,
+                    selected_pwf_trial, selected_pwf_amount, payment_rule,
+                    selected_pwf_payment, settled_at
+                )
+                VALUES (
+                    %(session_id)s, %(student_id)s, %(student_id_hash)s, %(name)s, %(study_mode)s,
+                    %(selected_pwf_trial)s, %(selected_pwf_amount)s, %(payment_rule)s,
+                    %(selected_pwf_payment)s, %(settled_at)s
+                )
+                ON CONFLICT (session_id) DO NOTHING
+                RETURNING
+                    session_id::text,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    study_mode,
+                    selected_pwf_trial,
+                    selected_pwf_amount,
+                    payment_rule,
+                    selected_pwf_payment,
+                    settled_at
+                """,
+                {**settlement, "selected_pwf_payment": Jsonb(settlement["selected_pwf_payment"])},
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    """
+                    SELECT
+                        session_id::text,
+                        student_id,
+                        student_id_hash,
+                        name,
+                        study_mode,
+                        selected_pwf_trial,
+                        selected_pwf_amount,
+                        payment_rule,
+                        selected_pwf_payment,
+                        settled_at
+                    FROM pwf_settlements
+                    WHERE session_id = %s
+                    """,
+                    (session_id,),
+                )
+                row = cur.fetchone()
+        conn.commit()
+    normalized = _normalize_pwf_settlement(row)
+    if normalized is None:
+        raise StorageError("PWF final settlement could not be saved")
     return normalized
 
 

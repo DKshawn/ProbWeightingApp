@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import {
   completePwfSession,
   createCiSettlement,
+  createPwfSettlement,
   saveCiResult,
   savePwfComprehensionEvents,
   savePwfResults,
@@ -70,6 +71,7 @@ export function useSession() {
   const [currentStep, setCurrentStep] = useState(0); // 0=pwf, 1-4=CI steps, 5=finish, 6=block break, 7=PWF settlement, 9=CI settlement
   const [stepData, setStepData] = useState({});
   const [ciSettlement, setCiSettlement] = useState(null);
+  const [pwfSettlement, setPwfSettlement] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [pwfRecordRetryAvailable, setPwfRecordRetryAvailable] = useState(false);
@@ -221,6 +223,7 @@ export function useSession() {
         const savedTrialResults = data.saved_ci_results || [];
         const savedPwfResults = data.saved_pwf_results || [];
         const savedCiSettlement = data.ci_settlement || null;
+        const savedPwfSettlement = data.pwf_settlement || null;
         const comprehensionRequired = Boolean(data.pwf_comprehension_required);
         const pwfCompleted = Boolean(data.pwf_completed)
           || (!comprehensionRequired && savedTrialResults.length > 0);
@@ -239,6 +242,7 @@ export function useSession() {
           pwfComprehensionRequired: comprehensionRequired,
           savedTrialResults,
           savedPwfResults,
+          savedPwfSettlement,
           pwfCompleted,
         };
 
@@ -257,6 +261,7 @@ export function useSession() {
         setPwfRecords(session.savedPwfResults);
         setCiRecords(session.savedTrialResults);
         setCiSettlement(savedCiSettlement);
+        setPwfSettlement(savedPwfSettlement);
         setCurrentTrialIndex(Math.min(resumeTrialIndex, Math.max(resolvedTrials.length - 1, 0)));
         setStepData({});
         if (pwfCompleted) {
@@ -573,6 +578,7 @@ export function useSession() {
     try {
       const result = await createCiSettlement(sessionId);
       setCiSettlement(result.settlement);
+      if (result.pwf_settlement) setPwfSettlement(result.pwf_settlement);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -580,6 +586,22 @@ export function useSession() {
       if (pendingOperationsRef.current === 0) setLoading(false);
     }
   }, [ciSettlement, sessionId]);
+
+  const loadPwfSettlement = useCallback(async () => {
+    if (!sessionId || pwfSettlement) return;
+    pendingOperationsRef.current += 1;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await createPwfSettlement(sessionId);
+      setPwfSettlement(result.settlement);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      pendingOperationsRef.current = Math.max(0, pendingOperationsRef.current - 1);
+      if (pendingOperationsRef.current === 0) setLoading(false);
+    }
+  }, [pwfSettlement, sessionId]);
 
   function continueToPwfSettlement() {
     setCurrentStep(7);
@@ -596,6 +618,7 @@ export function useSession() {
     currentTrial,
     stepData,
     ciSettlement,
+    pwfSettlement,
     pwfComprehensionRequired,
     loading,
     error,
@@ -611,6 +634,7 @@ export function useSession() {
     submitStep4,
     startNextBlock,
     loadCiSettlement,
+    loadPwfSettlement,
     continueToPwfSettlement,
     continueToFinish,
   };

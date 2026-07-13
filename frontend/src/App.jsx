@@ -20,6 +20,7 @@ export default function App() {
     currentTrial,
     stepData,
     ciSettlement,
+    pwfSettlement,
     pwfComprehensionRequired,
     pwfRecordRetryAvailable,
     loading,
@@ -35,6 +36,7 @@ export default function App() {
     submitStep4,
     startNextBlock,
     loadCiSettlement,
+    loadPwfSettlement,
     continueToPwfSettlement,
     continueToFinish,
   } = useSession();
@@ -105,7 +107,16 @@ export default function App() {
     case 6:
       return <BlockBreakScreen nextTrial={currentTrial} onContinue={startNextBlock} />;
     case 7:
-      return <PwfSettlementScreen records={pwfRecords} onNext={continueToFinish} />;
+      return (
+        <PwfSettlementScreen
+          records={pwfRecords}
+          settlement={pwfSettlement}
+          loading={loading}
+          error={error}
+          onLoad={loadPwfSettlement}
+          onNext={continueToFinish}
+        />
+      );
     case 9:
       return (
         <CiSettlementScreen

@@ -25,10 +25,12 @@ try:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
+        create_pwf_settlement,
         get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
+        get_pwf_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
         get_pwf_comprehension_events_by_session,
@@ -64,10 +66,12 @@ except ImportError:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
+        create_pwf_settlement,
         get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
+        get_pwf_settlement,
         get_pwf_results_by_student,
         get_pwf_results_by_session,
         get_pwf_comprehension_events_by_session,
@@ -173,6 +177,7 @@ def _build_session_response(
             saved_ci_results = get_ci_results_by_session(session_id)
             ci_settlement = get_ci_settlement(session_id)
             saved_pwf_results = get_pwf_results_by_session(session_id)
+            pwf_settlement = get_pwf_settlement(session_id)
             comprehension_passed = (
                 has_passed_pwf_comprehension(session_id)
                 if comprehension_required
@@ -185,6 +190,7 @@ def _build_session_response(
         saved_ci_results = []
         ci_settlement = None
         saved_pwf_results = []
+        pwf_settlement = None
         comprehension_passed = not comprehension_required
 
     pwf_completed = (
@@ -220,6 +226,7 @@ def _build_session_response(
         "saved_ci_results": saved_ci_results,
         "ci_settlement": ci_settlement,
         "saved_pwf_results": saved_pwf_results,
+        "pwf_settlement": pwf_settlement,
     }
 
 
@@ -338,15 +345,46 @@ def settle_ci_payment(session_id: str):
     try:
         existing = get_ci_settlement(session_id)
         if existing:
-            return {"status": "ok", "settlement": existing, "session_completed": True}
+            # Sessions created before PWF settlement persistence may already
+            # have a CI settlement.  Backfill their PWF settlement idempotently.
+            pwf_settlement = create_pwf_settlement(session_id)
+            session_completed = mark_session_completed_if_ready(session_id)
+            return {
+                "status": "ok",
+                "settlement": existing,
+                "pwf_settlement": pwf_settlement,
+                "session_completed": session_completed,
+            }
 
         _session_can_accept_writes(session_id)
         settlement = create_ci_settlement(session_id)
+        # Persist PWF's final task selection before a session becomes complete.
+        # The frontend only displays this already-saved result.
+        pwf_settlement = create_pwf_settlement(session_id)
         session_completed = mark_session_completed_if_ready(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return {"status": "ok", "settlement": settlement, "session_completed": session_completed}
+    return {
+        "status": "ok",
+        "settlement": settlement,
+        "pwf_settlement": pwf_settlement,
+        "session_completed": session_completed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/session/{session_id}/pwf-settlement
+# ---------------------------------------------------------------------------
+@app.post("/api/session/{session_id}/pwf-settlement")
+def settle_pwf_payment(session_id: str):
+    """Return the idempotently persisted PWF final-payment selection."""
+    try:
+        settlement = create_pwf_settlement(session_id)
+    except StorageError as exc:
+        _raise_storage_http_error(exc)
+
+    return {"status": "ok", "settlement": settlement}
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +653,8 @@ PWF_CSV_COLUMNS = [
     "reward_raw_total_amount", "reward_raw_all_items_total_amount",
     "reward_item_count", "reward_selected_item_index", "reward_selected_item_label",
     "reward_selected_item_amount", "reward_penalty_reasons", "reward_settled_at",
+    "pwf_final_payment_selected", "pwf_final_selected_trial", "pwf_final_payment_total",
+    "pwf_final_payment_rule", "pwf_final_settled_at",
     "prompt", "source_timestamp",
     "payload_json", "Timestamp",
 ]
@@ -676,6 +716,11 @@ PWF_FIELD_MAP = {
     "reward_selected_item_amount": "reward_selected_item_amount",
     "reward_penalty_reasons": "reward_penalty_reasons",
     "reward_settled_at": "reward_settled_at",
+    "pwf_final_payment_selected": "pwf_final_payment_selected",
+    "pwf_final_selected_trial": "pwf_final_selected_trial",
+    "pwf_final_payment_total": "pwf_final_payment_total",
+    "pwf_final_payment_rule": "pwf_final_payment_rule",
+    "pwf_final_settled_at": "pwf_final_settled_at",
     "prompt": "prompt",
     "source_timestamp": "source_timestamp",
     "payload_json": "payload",
@@ -802,6 +847,7 @@ def download_pwf_csv(student_id: str):
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=PWF_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
+    settlements_by_session = {}
     for r in student_results:
         row = {col: r.get(PWF_FIELD_MAP[col], "") for col in PWF_CSV_COLUMNS}
         payload = row["payload_json"] if isinstance(row["payload_json"], dict) else {}
@@ -817,6 +863,26 @@ def download_pwf_csv(student_id: str):
         row["reward_selected_item_amount"] = row["reward_selected_item_amount"] or feedback.get("selected_item_amount", "")
         row["reward_penalty_reasons"] = row["reward_penalty_reasons"] or "; ".join(feedback.get("penalty_reasons", []) or [])
         row["reward_settled_at"] = row["reward_settled_at"] or feedback.get("settled_at", "")
+        session_id = str(r.get("session_id", ""))
+        if session_id not in settlements_by_session:
+            try:
+                settlements_by_session[session_id] = get_pwf_settlement(session_id)
+            except StorageError as exc:
+                _raise_storage_http_error(exc)
+        settlement = settlements_by_session[session_id]
+        if settlement:
+            selected_trial = settlement.get("selected_pwf_trial")
+            try:
+                selected_for_payment = int(r.get("pwf_trial")) == int(selected_trial)
+            except (TypeError, ValueError):
+                selected_for_payment = False
+            row.update({
+                "pwf_final_payment_selected": selected_for_payment,
+                "pwf_final_selected_trial": selected_trial,
+                "pwf_final_payment_total": settlement.get("selected_pwf_amount", ""),
+                "pwf_final_payment_rule": settlement.get("payment_rule", ""),
+                "pwf_final_settled_at": settlement.get("settled_at", ""),
+            })
         row["payload_json"] = json.dumps(row["payload_json"], ensure_ascii=False, separators=(",", ":"))
         writer.writerow(row)
 
