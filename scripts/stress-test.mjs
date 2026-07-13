@@ -13,6 +13,16 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_STUDY_MODE = "full";
 const PWF_APP_PATH = path.resolve("frontend/public/pwf/app.js");
 
+// Keep synthetic records aligned with the client-side seeded CP assignment.
+// The values are replaced from the live PWF app at runtime when available.
+let resolveClientTaskModes = null;
+let resolveClientTaskOrder = null;
+let memoryTaskSettings = {
+  mode: "number_memory",
+  digits: 5,
+  seconds: 5,
+};
+
 function parseArgs(argv) {
   const options = {
     baseUrl: DEFAULT_BASE_URL,
@@ -151,7 +161,7 @@ function loadPwfBlocks(appFile) {
   const source = fs.readFileSync(appFile, "utf8");
   const sanitized = source.replace(
     /if \(SMOKE_MODE\) \{[\s\S]*$/m,
-    "globalThis.__stress = { BASE_BLOCKS };",
+    "globalThis.__stress = { BASE_BLOCKS, createTaskModes, createTaskOrder, MODE_NUMBER_MEMORY, NUMBER_MEMORY_DIGITS, NUMBER_MEMORY_SECONDS };",
   );
   const context = {
     window: { location: { search: "?embedded=1" } },
@@ -160,14 +170,36 @@ function loadPwfBlocks(appFile) {
     console: { log() {}, warn() {}, error() {} },
   };
   vm.runInNewContext(sanitized, context, { filename: appFile });
-  const blocks = context.__stress?.BASE_BLOCKS;
+  const clientRuntime = context.__stress;
+  const blocks = clientRuntime?.BASE_BLOCKS;
   if (!Array.isArray(blocks) || blocks.length === 0) {
     console.warn("Could not extract BASE_BLOCKS. Using fallback block metadata.");
     return fallback;
   }
+  if (typeof clientRuntime.createTaskModes === "function") {
+    resolveClientTaskModes = (block, participant) => {
+      return Array.from(clientRuntime.createTaskModes(block, participant));
+    };
+    memoryTaskSettings = {
+      mode: clientRuntime.MODE_NUMBER_MEMORY || memoryTaskSettings.mode,
+      digits: Number(clientRuntime.NUMBER_MEMORY_DIGITS) || memoryTaskSettings.digits,
+      seconds: Number(clientRuntime.NUMBER_MEMORY_SECONDS) || memoryTaskSettings.seconds,
+    };
+  } else {
+    console.warn("Could not extract client task-mode assignment. Synthetic PWF records will use normal mode only.");
+  }
+  if (typeof clientRuntime.createTaskOrder === "function") {
+    resolveClientTaskOrder = (block, participant) => {
+      const clientBlock = blocks.find((candidate) => candidate.id === block.id) ?? block;
+      return Array.from(clientRuntime.createTaskOrder(clientBlock, participant));
+    };
+  } else {
+    console.warn("Could not extract client task order. Synthetic PWF records will use source order only.");
+  }
   return blocks.map((block) => ({
     id: block.id,
     title: block.title,
+    modeStrategy: block.modeStrategy || "",
     amountLevel: block.amountLevel || "standard",
     amountMultiplier: block.amountMultiplier || 1,
     tasks: (block.tasks || []).map((task, index) => ({
@@ -178,6 +210,33 @@ function loadPwfBlocks(appFile) {
       amountMultiplier: task.amountMultiplier || block.amountMultiplier || 1,
     })),
   }));
+}
+
+function taskOrderForStudent(block, studentId) {
+  const fallback = Array.from({ length: block.tasks.length }, (_, index) => index);
+  if (!resolveClientTaskOrder) return fallback;
+  try {
+    const order = resolveClientTaskOrder(block, studentId);
+    const valid = order.length === block.tasks.length
+      && new Set(order).size === block.tasks.length
+      && order.every((index) => Number.isInteger(index) && index >= 0 && index < block.tasks.length);
+    return valid ? order : fallback;
+  } catch (error) {
+    console.warn(`Could not derive PWF task order for ${studentId}; using source order only: ${error.message}`);
+    return fallback;
+  }
+}
+
+function taskModesForStudent(block, studentId) {
+  const fallback = Array.from({ length: block.tasks.length }, () => "normal");
+  if (!resolveClientTaskModes) return fallback;
+  try {
+    const modes = resolveClientTaskModes(block, studentId);
+    return modes.length === block.tasks.length ? modes : fallback;
+  } catch (error) {
+    console.warn(`Could not derive PWF task modes for ${studentId}; using normal mode only: ${error.message}`);
+    return fallback;
+  }
 }
 
 function fakeStudentIds(count, idStart) {
@@ -195,13 +254,20 @@ function assignmentForStudent(studentId, blocks) {
   const lastThreeText = normalized.slice(-3);
   const lastThree = Number(lastThreeText);
   const blockIndex = lastThree % blocks.length;
-  const block = blocks[blockIndex];
+  const sourceBlock = blocks[blockIndex];
+  const taskOrder = taskOrderForStudent(sourceBlock, normalized);
+  const block = {
+    ...sourceBlock,
+    tasks: taskOrder.map((index) => sourceBlock.tasks[index]),
+  };
   return {
     lastThreeText,
     blockIndex,
     groupNumber: blockIndex + 1,
     modulus: blocks.length,
     block,
+    taskOrder,
+    taskModes: taskModesForStudent(block, normalized),
   };
 }
 
@@ -225,6 +291,9 @@ async function requestResponse(baseUrl, pathName, options = {}, timeoutMs = DEFA
     const response = await fetch(`${baseUrl}${pathName}`, {
       ...fetchOptions,
       signal: controller.signal,
+      // API endpoints do not legitimately redirect. Keeping redirects visible
+      // prevents an HTML deployment-protection page from being treated as CSV.
+      redirect: "manual",
       headers: {
         ...(fetchOptions.body ? { "Content-Type": "application/json" } : {}),
         ...(fetchOptions.headers || {}),
@@ -497,9 +566,56 @@ function syntheticPayloadForTask(task, index) {
   };
 }
 
+function syntheticMemoryNumber(studentId, taskIndex, digits = memoryTaskSettings.digits) {
+  const safeDigits = Math.max(1, Math.min(10, Number(digits) || 5));
+  let state = (Number(studentId) + 1) * 1_000_003 + taskIndex * 97;
+  const first = String((state % 9) + 1);
+  const available = Array.from({ length: 10 }, (_, index) => String(index)).filter((digit) => digit !== first);
+  let number = first;
+  while (number.length < safeDigits) {
+    state = Math.imul(state ^ (state >>> 16), 2_246_822_507) >>> 0;
+    number += available.splice(state % available.length, 1)[0];
+  }
+  return number;
+}
+
+function syntheticMemoryFields(session, taskIndex, taskMode) {
+  if (taskMode !== memoryTaskSettings.mode) {
+    return {
+      has_memory_task: false,
+      memory_digits: "",
+      memory_seconds: "",
+      memory_number: "",
+      memory_input_pre: "",
+      memory_pre_correct: "",
+      memory_input_post: "",
+      memory_post_correct: "",
+      memory_display_duration_ms: "",
+      memory_pre_response_time_ms: "",
+      memory_post_response_time_ms: "",
+    };
+  }
+  const number = syntheticMemoryNumber(session.studentId, taskIndex);
+  return {
+    has_memory_task: true,
+    memory_digits: memoryTaskSettings.digits,
+    memory_seconds: memoryTaskSettings.seconds,
+    memory_number: number,
+    memory_input_pre: "",
+    memory_pre_correct: "",
+    memory_input_post: number,
+    memory_post_correct: true,
+    memory_display_duration_ms: memoryTaskSettings.seconds * 1_000,
+    memory_pre_response_time_ms: "",
+    memory_post_response_time_ms: 1_200 + taskIndex,
+  };
+}
+
 function buildPwfRecord(session, assignment, task, index) {
   const block = assignment.block;
   const amountMultiplier = task.amountMultiplier || block.amountMultiplier || 1;
+  const taskMode = assignment.taskModes[index] ?? "normal";
+  const memoryFields = syntheticMemoryFields(session, index, taskMode);
   return {
     session_id: session.sessionId,
     student_id: session.studentId,
@@ -522,21 +638,11 @@ function buildPwfRecord(session, assignment, task, index) {
     is_anchor: false,
     task_index: index + 1,
     task_type: task.type || "mpl",
-    task_mode: index === 0 ? "normal" : "normal",
+    task_mode: taskMode,
     time_limit_seconds: "",
     timed_out: false,
     time_over_seconds: "",
-    has_memory_task: false,
-    memory_digits: "",
-    memory_seconds: "",
-    memory_number: "",
-    memory_input_pre: "",
-    memory_pre_correct: "",
-    memory_input_post: "",
-    memory_post_correct: "",
-    memory_display_duration_ms: "",
-    memory_pre_response_time_ms: "",
-    memory_post_response_time_ms: "",
+    ...memoryFields,
     response_time_ms: 800 + index,
     prompt: "stress test synthetic PWF record",
     payload: syntheticPayloadForTask(task, index),
@@ -684,7 +790,52 @@ async function createCiSettlement(baseUrl, session, timeoutMs) {
   );
 }
 
-async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, timeoutMs) {
+function parseCsvLine(line) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && quoted && line[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      values.push(value);
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  values.push(value);
+  return values;
+}
+
+function validatePwfMemoryRows(pwfCsv, expectedMemoryRows) {
+  const lines = pwfCsv.trim().split(/\r?\n/);
+  const headers = parseCsvLine(lines[0] || "");
+  const indexes = Object.fromEntries(headers.map((header, index) => [header, index]));
+  for (const header of ["has_memory_task", "memory_number", "memory_input_post", "memory_post_correct"]) {
+    if (!(header in indexes)) throw new Error(`PWF CSV is missing required memory column: ${header}`);
+  }
+  const memoryRows = lines.slice(1).map(parseCsvLine).filter((row) => (
+    String(row[indexes.has_memory_task] ?? "").toLowerCase() === "true"
+  ));
+  if (memoryRows.length !== expectedMemoryRows) {
+    throw new Error(`PWF CSV memory row count ${memoryRows.length}, expected ${expectedMemoryRows}`);
+  }
+  const invalidMemoryRow = memoryRows.find((row) => {
+    const number = row[indexes.memory_number];
+    return !new RegExp(`^\\d{${memoryTaskSettings.digits}}$`).test(number)
+      || row[indexes.memory_input_post] !== number
+      || String(row[indexes.memory_post_correct] ?? "").toLowerCase() !== "true";
+  });
+  if (invalidMemoryRow) throw new Error("PWF CSV contains an incomplete or incorrect memory-task response.");
+  return memoryRows.length;
+}
+
+async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, expectedMemoryRows, timeoutMs) {
   const [ciCsv, pwfCsv, comprehensionCsv] = await Promise.all([
     requestText(baseUrl, `/api/ci-results/${encodeURIComponent(session.studentId)}/csv`, {}, timeoutMs),
     requestText(baseUrl, `/api/pwf-results/${encodeURIComponent(session.studentId)}/csv`, {}, timeoutMs),
@@ -702,6 +853,7 @@ async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, t
   if (comprehensionRows !== 1) {
     throw new Error(`Comprehension CSV row count ${comprehensionRows}, expected 1`);
   }
+  const memoryRows = validatePwfMemoryRows(pwfCsv, expectedMemoryRows);
   const comprehensionHeaders = comprehensionCsv.split(/\r?\n/, 1)[0].split(",");
   for (const header of ["attempt_duration_ms", "response_time_probability_meaning_ms"]) {
     if (!comprehensionHeaders.includes(header)) {
@@ -712,6 +864,7 @@ async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, t
     ciRows,
     pwfRows,
     comprehensionRows,
+    memoryRows,
     ciBytes: ciCsv.length,
     pwfBytes: pwfCsv.length,
     comprehensionBytes: comprehensionCsv.length,
@@ -761,6 +914,7 @@ async function verifyCheckpointRecovery(baseUrl, studentId, studyMode, blocks, t
     afterFirstCi,
     assignment.block.tasks.length,
     afterFirstCi.trials.length,
+    assignment.taskModes.filter((mode) => mode === memoryTaskSettings.mode).length,
     timeoutMs,
   );
   return {
@@ -956,7 +1110,14 @@ async function main() {
     console.log(`Phase 4: downloading CI/PWF/comprehension CSV for ${completedForDownload.length} participants concurrently`);
     downloadResults = await Promise.all(completedForDownload.map(({ session, assignment }) => timed(
       `csv:${session.studentId}`,
-      () => downloadCsvs(options.baseUrl, session, assignment.block.tasks.length, session.trials.length, options.timeoutMs),
+      () => downloadCsvs(
+        options.baseUrl,
+        session,
+        assignment.block.tasks.length,
+        session.trials.length,
+        assignment.taskModes.filter((mode) => mode === memoryTaskSettings.mode).length,
+        options.timeoutMs,
+      ),
     )));
     printStage(summarizeStage("CSV concurrent download", downloadResults));
   }

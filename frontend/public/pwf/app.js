@@ -40,8 +40,8 @@ const MODE_NORMAL = "normal";
 const MODE_TIME_PRESSURE = "time_pressure";
 const MODE_NUMBER_MEMORY = "number_memory";
 // Bump this frozen design identifier whenever a protocol change should create a new CP assignment.
-const DESIGN_VERSION = "2026-07-13-pwf-b-only-library-abg-cp-seeded-first-task-no-tp";
-const STORAGE_SCHEMA_VERSION = "2026-07-13-b-only-library-abg-v7";
+const DESIGN_VERSION = "2026-07-14-pwf-b-seeded-task-order-cp-first-task-no-tp";
+const STORAGE_SCHEMA_VERSION = "2026-07-14-pwf-b-seeded-task-order-v8";
 const CP_ASSIGNMENT_ALGORITHM = "fnv1a-mulberry32-v1";
 const CONSENT_VERSION = "2026-07-11-consent-form-v1";
 const GENDER_OPTIONS = ["male", "female"];
@@ -327,11 +327,11 @@ function createBlocks(amountMultiplier = 1) {
       createMplTask(lotteryText(90, 1500, 10, 0, m), "確実な金額", "JPY", range(1500 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-5" }),
       createMplTask(lotteryText(50, 5000, 50, 1000, m), "確実な金額", "JPY", range(5000 * m, 1000 * m, 20), "JPY", { taskId: "bruhin-sheet-6" }),
       createMplTask(lotteryText(20, 8000, 80, 500, m), "確実な金額", "JPY", range(8000 * m, 500 * m, 20), "JPY", { taskId: "bruhin-sheet-7" }),
-      createMplTask(lotteryText(33, 6000, 67, 0, m), "確実な金額", "JPY", range(6000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-9" }),
-      createMplTask(lotteryText(67, 2500, 33, 0, m), "確実な金額", "JPY", range(2500 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-10" }),
-      createMplTask(lotteryText(40, 5000, 60, 0, m), "確実な金額", "JPY", range(5000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-11" }),
-      createMplTask(lotteryText(60, 2500, 40, 500, m), "確実な金額", "JPY", range(2500 * m, 500 * m, 20), "JPY", { taskId: "bruhin-sheet-12" }),
-      createMplTask(lotteryText(15, 12000, 85, 0, m), "確実な金額", "JPY", range(12000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-13" }),
+      createMplTask(lotteryText(33, 6000, 67, 0, m), "確実な金額", "JPY", range(6000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-8" }),
+      createMplTask(lotteryText(67, 2500, 33, 0, m), "確実な金額", "JPY", range(2500 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-9" }),
+      createMplTask(lotteryText(40, 5000, 60, 0, m), "確実な金額", "JPY", range(5000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-10" }),
+      createMplTask(lotteryText(60, 2500, 40, 500, m), "確実な金額", "JPY", range(2500 * m, 500 * m, 20), "JPY", { taskId: "bruhin-sheet-11" }),
+      createMplTask(lotteryText(15, 12000, 85, 0, m), "確実な金額", "JPY", range(12000 * m, 0, 20), "JPY", { taskId: "bruhin-sheet-12" }),
     ],
   },
   {
@@ -2069,7 +2069,10 @@ function shuffle(items, random = Math.random) {
 
 function createTaskOrder(block, participant) {
   const indexes = Array.from({ length: block.tasks.length }, (_, index) => index);
-  if (block.id !== "experiment-g") return indexes;
+  // Shuffle B before assigning modes to displayed positions.  This spreads
+  // time pressure and number-memory conditions across the underlying lotteries
+  // while retaining a deterministic, resumable order for each participant.
+  if (!["bruhin-2010", "experiment-g"].includes(block.id)) return indexes;
   return shuffle(indexes, createSeededRandom(`${DESIGN_VERSION}:${participant}:${block.id}:task-order`));
 }
 

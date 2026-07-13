@@ -100,6 +100,33 @@ for (const studentId of ["0000000", "1234567", "9999999"]) {
 const bBlock = app.BASE_BLOCKS[0];
 const studentId = "1234567";
 const assignment = app.assignBlockFromStudentId(studentId);
+const bOrder = app.createTaskOrder(bBlock, studentId);
+assert.equal(bOrder.join(","), app.createTaskOrder(bBlock, studentId).join(","), "Bruhin order is not reproducible");
+assert.equal(new Set(bOrder).size, bBlock.tasks.length, "Bruhin order is not a complete permutation");
+assert.notEqual(bOrder.join(","), bBlock.tasks.map((_, index) => index).join(","), "Bruhin task order was not shuffled");
+const orderedBBlock = { ...bBlock, tasks: bOrder.map((index) => bBlock.tasks[index]) };
+const bModes = app.createTaskModes(orderedBBlock, studentId);
+assert.equal(bModes.filter((mode) => mode === "time_pressure").length, 5, "Bruhin time-pressure count is wrong");
+assert.equal(bModes.filter((mode) => mode === "number_memory").length, 1, "Bruhin number-memory count is wrong");
+assert.notEqual(bModes[0], "time_pressure", "The first displayed Bruhin task must not have time pressure");
+assert.deepEqual(
+  Array.from(bBlock.tasks, (task) => task.taskId),
+  Array.from({ length: 12 }, (_, index) => `bruhin-sheet-${index + 1}`),
+  "Bruhin task IDs must be continuous from sheet 1 through sheet 12",
+);
+const firstDisplayedBruhinTasks = new Set();
+const bruhinModeTotals = { normal: 0, time_pressure: 0, number_memory: 0 };
+for (let offset = 0; offset < 100; offset += 1) {
+  const participant = String(9100101 + offset);
+  const order = app.createTaskOrder(bBlock, participant);
+  const orderedBlock = { ...bBlock, tasks: order.map((index) => bBlock.tasks[index]) };
+  const modes = app.createTaskModes(orderedBlock, participant);
+  firstDisplayedBruhinTasks.add(orderedBlock.tasks[0].taskId);
+  assert.notEqual(modes[0], "time_pressure", "The first displayed Bruhin task must never have time pressure");
+  modes.forEach((mode) => { bruhinModeTotals[mode] += 1; });
+}
+assert.equal(firstDisplayedBruhinTasks.size, bBlock.tasks.length, "Bruhin shuffle does not spread every task into the first displayed position");
+assert.deepEqual(bruhinModeTotals, { normal: 600, time_pressure: 500, number_memory: 100 }, "Bruhin condition totals changed across 100 participants");
 Object.assign(app.state, {
   phase: "task",
   participant: studentId,
@@ -111,8 +138,8 @@ Object.assign(app.state, {
   taskIndex: 3,
   runtime: null,
   records: [{ task_id: "bruhin-sheet-1", task_index: 1 }],
-  taskOrder: app.createTaskOrder(bBlock, studentId),
-  taskModes: app.createTaskModes(bBlock, studentId),
+  taskOrder: bOrder,
+  taskModes: bModes,
   taskTimedOut: false,
   memoryChallenge: null,
   practiceFeedback: null,
