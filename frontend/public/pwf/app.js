@@ -1532,7 +1532,7 @@ function renderComprehensionLockDialog() {
 function renderComprehensionWindow() {
   ensureComprehensionAttemptTiming();
   const allAnswered = COMPREHENSION_QUESTIONS.every((question) => state.comprehension.answers[question.id]);
-  const canSubmit = state.practiceCompleted && !state.comprehension.locked && !state.comprehension.passed;
+  const canSubmit = !state.comprehension.locked && !state.comprehension.passed;
   const messageClass = state.comprehension.messageType ? ` ${state.comprehension.messageType}` : "";
   app.innerHTML = `
     <main class="screen practice-hub-screen">
@@ -1541,9 +1541,6 @@ function renderComprehensionWindow() {
         <div class="step-label">理解度確認</div>
         <h2>実験の理解度確認</h2>
         <p class="comprehension-intro">説明を確認し、6問すべてに回答してください。</p>
-        ${state.practiceCompleted
-          ? ""
-          : '<p class="comprehension-status info">回答内容は先に確認できます。回答の提出は、練習問題を完了した後にできます。</p>'}
         <form class="comprehension-form" id="comprehensionForm">
           <div class="comprehension-question-list">
             ${COMPREHENSION_QUESTIONS.map(renderComprehensionQuestion).join("")}
@@ -1551,7 +1548,7 @@ function renderComprehensionWindow() {
           <div class="comprehension-footer">
             <p class="comprehension-attempts">回答確認の残り回数：<strong>${state.comprehension.attemptsRemaining}回</strong></p>
             <p class="comprehension-status${messageClass}" id="comprehensionStatus" aria-live="assertive">${escapeHtml(state.comprehension.message)}</p>
-            ${!allAnswered && state.practiceCompleted
+            ${!allAnswered
               ? '<p class="comprehension-help">未回答の問題があります。すべての問題に回答してください。</p>'
               : ""}
             <div class="comprehension-actions">
@@ -1612,7 +1609,7 @@ function beginComprehensionAttempt() {
 }
 
 function ensureComprehensionAttemptTiming() {
-  if (!state.practiceCompleted || state.comprehension.locked || state.comprehension.passed) return null;
+  if (state.comprehension.locked || state.comprehension.passed) return null;
   const startedAt = Number(state.comprehension.attemptStartedAt);
   if (Number.isFinite(startedAt) && startedAt > 0) return startedAt;
   return beginComprehensionAttempt();
@@ -1727,7 +1724,7 @@ function bindComprehensionHandlers() {
 
   document.getElementById("comprehensionForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!state.practiceCompleted || state.comprehension.locked || state.comprehension.passed) return;
+    if (state.comprehension.locked || state.comprehension.passed) return;
     const unanswered = COMPREHENSION_QUESTIONS.filter((question) => !state.comprehension.answers[question.id]);
     if (unanswered.length > 0) {
       state.comprehension.message = COMPREHENSION_INCOMPLETE_MESSAGE;
@@ -1970,9 +1967,9 @@ function finishPracticeFeedback() {
 }
 
 function startFormalTasks() {
-  if (!state.practiceCompleted || !state.comprehension.passed) {
+  if (!state.comprehension.passed) {
     state.practicePanel = PRACTICE_PANEL_COMPREHENSION;
-    state.comprehension.message = "練習問題と理解度確認を完了してください。";
+    state.comprehension.message = "理解度確認を完了してください。";
     state.comprehension.messageType = "error";
     saveState();
     render();
