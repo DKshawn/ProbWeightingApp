@@ -25,6 +25,9 @@ function parseArgs(argv) {
     appFile: PWF_APP_PATH,
     yes: false,
     skipDownloads: false,
+    verifyResume: false,
+    checkpointId: null,
+    dryRun: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -45,6 +48,9 @@ function parseArgs(argv) {
     else if (arg === "--app-file") options.appFile = path.resolve(next());
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--skip-downloads") options.skipDownloads = true;
+    else if (arg === "--verify-resume") options.verifyResume = true;
+    else if (arg === "--checkpoint-id") options.checkpointId = positiveInt(next(), arg);
+    else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -58,6 +64,12 @@ function parseArgs(argv) {
   }
   if (options.finishCount > options.startCount) {
     throw new Error("--finish-count cannot exceed --start-count");
+  }
+  if (options.verifyResume && options.idStart && !options.checkpointId) {
+    options.checkpointId = options.idStart + options.startCount;
+  }
+  if (options.verifyResume && !options.checkpointId) {
+    throw new Error("--verify-resume requires --checkpoint-id when --id-start is not provided");
   }
   options.baseUrl = options.baseUrl.replace(/\/+$/, "");
   return options;
@@ -86,6 +98,9 @@ Options:
   --study-mode full|pilot    Study mode sent to /api/session/start. Default: ${DEFAULT_STUDY_MODE}
   --id-start N               First fake 7-digit student id. Default: timestamp-based 9xxxxxx
   --skip-downloads           Do not fetch final CI/PWF CSV files.
+  --verify-resume            After all main participants pass, verify PWF and CI checkpoint recovery.
+  --checkpoint-id N          Separate fake student ID for --verify-resume. Defaults to id-start + start-count.
+  --dry-run                  Validate configuration without calling the API or writing data.
   --yes                      Required for non-localhost targets.
 `);
 }
@@ -97,7 +112,6 @@ function isLocalTarget(baseUrl) {
 
 function loadPwfBlocks(appFile) {
   const fallback = [
-    { id: "choi-2022-study2", title: "実験C", tasks: Array.from({ length: 12 }, (_, index) => ({ taskId: `choi-stress-${index + 1}`, type: "mpl" })) },
     { id: "bruhin-2010", title: "実験B", tasks: Array.from({ length: 12 }, (_, index) => ({ taskId: `bruhin-stress-${index + 1}`, type: "mpl" })) },
   ];
 
@@ -140,7 +154,7 @@ function loadPwfBlocks(appFile) {
 
 function fakeStudentIds(count, idStart) {
   const seed = idStart ?? 9000000 + (Date.now() % 900000);
-  if (seed < 1000000 || seed + count - 1 > 9999999) {
+  if (seed < 1 || seed + count - 1 > 9999999) {
     throw new Error(`Fake student id range must stay within 7 digits: ${seed}..${seed + count - 1}`);
   }
   return Array.from({ length: count }, (_, index) => {
@@ -252,7 +266,33 @@ async function startSession(baseUrl, studentId, studyMode, timeoutMs) {
     studyMode: data.study_mode || studyMode,
     experimentMode: data.experiment_mode || "normal",
     timePressureSeconds: data.time_pressure_seconds || 0,
+    resumed: Boolean(data.resumed),
+    sessionStatus: data.session_status || "started",
+    pwfCompleted: Boolean(data.pwf_completed),
+    savedPwfResults: data.saved_pwf_results || [],
+    savedCiResults: data.saved_ci_results || [],
   };
+}
+
+function assertFreshSession(session, label) {
+  if (
+    session.resumed
+    || session.sessionStatus === "completed"
+    || session.pwfCompleted
+    || session.savedPwfResults.length > 0
+    || session.savedCiResults.length > 0
+  ) {
+    throw new Error(`${label} reused an existing session for ${session.studentId}; use unused fake student IDs.`);
+  }
+}
+
+function assertResumedSession(session, expectedSessionId, label) {
+  if (!session.resumed) {
+    throw new Error(`${label} did not return a resumable session.`);
+  }
+  if (session.sessionId !== expectedSessionId) {
+    throw new Error(`${label} returned a different session ID.`);
+  }
 }
 
 function feedbackPayload(amount = 100) {
@@ -531,6 +571,60 @@ async function downloadCsvs(baseUrl, session, expectedPwfRows, expectedCiRows, t
   };
 }
 
+async function verifyCheckpointRecovery(baseUrl, studentId, studyMode, blocks, timeoutMs) {
+  const initial = await startSession(baseUrl, studentId, studyMode, timeoutMs);
+  assertFreshSession(initial, "checkpoint start");
+  if (!initial.trials.length) throw new Error("checkpoint session has no CI trials");
+
+  const assignment = assignmentForStudent(initial.studentId, blocks);
+  if (!assignment.block?.tasks?.length) throw new Error("checkpoint session has no PWF tasks");
+
+  await savePwfRecord(baseUrl, initial, assignment, assignment.block.tasks[0], 0, timeoutMs);
+  const afterFirstPwf = await startSession(baseUrl, studentId, studyMode, timeoutMs);
+  assertResumedSession(afterFirstPwf, initial.sessionId, "PWF checkpoint");
+  if (!afterFirstPwf.savedPwfResults.some((record) => Number(record.pwf_trial) === 1)) {
+    throw new Error("PWF checkpoint is missing the saved first task.");
+  }
+
+  for (let index = 1; index < assignment.block.tasks.length; index += 1) {
+    await savePwfRecord(baseUrl, afterFirstPwf, assignment, assignment.block.tasks[index], index, timeoutMs);
+  }
+  await saveComprehensionPass(baseUrl, afterFirstPwf, timeoutMs);
+  await completePwf(baseUrl, afterFirstPwf, timeoutMs);
+
+  const afterPwfComplete = await startSession(baseUrl, studentId, studyMode, timeoutMs);
+  assertResumedSession(afterPwfComplete, initial.sessionId, "post-PWF checkpoint");
+  if (!afterPwfComplete.pwfCompleted) {
+    throw new Error("PWF completion was not restored after restarting the session.");
+  }
+
+  await saveCi(baseUrl, afterPwfComplete, afterPwfComplete.trials[0], 0, timeoutMs);
+  const afterFirstCi = await startSession(baseUrl, studentId, studyMode, timeoutMs);
+  assertResumedSession(afterFirstCi, initial.sessionId, "CI checkpoint");
+  if (!afterFirstCi.savedCiResults.some((record) => Number(record.trial) === Number(afterPwfComplete.trials[0].trial))) {
+    throw new Error("CI checkpoint is missing the saved first trial.");
+  }
+
+  for (let index = 1; index < afterFirstCi.trials.length; index += 1) {
+    await saveCi(baseUrl, afterFirstCi, afterFirstCi.trials[index], index, timeoutMs);
+  }
+  await createCiSettlement(baseUrl, afterFirstCi, timeoutMs);
+  const csv = await downloadCsvs(
+    baseUrl,
+    afterFirstCi,
+    assignment.block.tasks.length,
+    afterFirstCi.trials.length,
+    timeoutMs,
+  );
+  return {
+    studentId,
+    sessionId: initial.sessionId,
+    pwfRows: csv.pwfRows,
+    ciRows: csv.ciRows,
+    checkpoints: ["PWF task", "PWF completion", "CI trial"],
+  };
+}
+
 function countCsvRows(csvText) {
   const lines = csvText.trim().split(/\r?\n/);
   return Math.max(0, lines.length - 1);
@@ -576,10 +670,21 @@ async function main() {
 
   const blocks = loadPwfBlocks(options.appFile);
   const ids = fakeStudentIds(options.startCount, options.idStart);
+  const checkpointStudentId = options.checkpointId
+    ? String(options.checkpointId).padStart(7, "0")
+    : null;
+  if (checkpointStudentId && ids.includes(checkpointStudentId)) {
+    throw new Error("--checkpoint-id must not overlap with the main test student IDs.");
+  }
   console.log("Stress test target:", options.baseUrl);
   console.log("Study mode:", options.studyMode);
   console.log("Fake student id range:", `${ids[0]}..${ids[ids.length - 1]}`);
   console.log("PWF blocks:", blocks.map((block) => `${block.title}/${block.id}:${block.tasks.length}`).join(", "));
+  if (options.dryRun) {
+    console.log("Dry run: no API requests were sent and no data was written.");
+    if (checkpointStudentId) console.log("Checkpoint student ID:", checkpointStudentId);
+    return;
+  }
   console.log(`Phase 1: starting ${ids.length} sessions concurrently`);
 
   const startResults = await Promise.all(ids.map((studentId) => timed(
@@ -592,6 +697,7 @@ async function main() {
   if (startedSessions.length < options.finishCount) {
     throw new Error(`Only ${startedSessions.length} sessions started; cannot finish ${options.finishCount}`);
   }
+  startResults.filter((result) => result.ok).forEach((result) => assertFreshSession(result.value, "main test start"));
 
   const finishingSessions = startedSessions.slice(0, options.finishCount).map((session) => {
     const assignment = assignmentForStudent(session.studentId, blocks);
@@ -653,7 +759,7 @@ async function main() {
     summarizeStage("final CI + settlement", finalResults),
     ...(options.skipDownloads ? [] : [summarizeStage("CSV concurrent download", downloadResults)]),
   ];
-  const failedTotal = summaries.reduce((sum, summary) => sum + summary.failed, 0);
+  let failedTotal = summaries.reduce((sum, summary) => sum + summary.failed, 0);
   const expectedApiWrites =
     options.startCount +
     prepResults.filter((result) => result.ok).reduce((sum, result) => (
@@ -663,6 +769,26 @@ async function main() {
       sum + result.value.finalCiRows + result.value.settlementWrites
     ), 0);
   console.log("Expected successful POST writes:", expectedApiWrites);
+  if (options.verifyResume) {
+    if (failedTotal > 0) {
+      console.log("Checkpoint recovery: SKIPPED because the main 50-participant submission test failed.");
+      failedTotal += 1;
+    } else {
+      console.log(`Phase 5: verifying checkpoint recovery with ${checkpointStudentId}`);
+      const checkpointResult = await timed(
+        `checkpoint:${checkpointStudentId}`,
+        () => verifyCheckpointRecovery(
+          options.baseUrl,
+          checkpointStudentId,
+          options.studyMode,
+          blocks,
+          options.timeoutMs,
+        ),
+      );
+      printStage(summarizeStage("checkpoint recovery", [checkpointResult]));
+      if (!checkpointResult.ok) failedTotal += 1;
+    }
+  }
   console.log("Stress test result:", failedTotal === 0 ? "PASS" : "FAIL");
   if (failedTotal > 0) process.exitCode = 1;
 }

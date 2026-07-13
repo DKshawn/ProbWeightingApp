@@ -8,6 +8,8 @@ import {
   startSession,
 } from "../api/client";
 
+const PWF_FAILED_RECORDS_STORAGE_KEY = "pwf-failed-records";
+
 function getStudyModeFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (params.get("mode") === "pilot" || params.get("study_mode") === "pilot" || params.get("pilot") === "1") {
@@ -70,11 +72,13 @@ export function useSession() {
   const [ciSettlement, setCiSettlement] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [pwfRecordRetryAvailable, setPwfRecordRetryAvailable] = useState(false);
   const pendingOperationsRef = useRef(0);
   const pwfSessionRef = useRef(null);
   const pwfSessionPromiseRef = useRef(null);
   const pwfSaveQueueRef = useRef(Promise.resolve());
   const pwfSaveFailedRef = useRef(false);
+  const failedPwfRecordsRef = useRef(new Map());
   const comprehensionSaveQueueRef = useRef(Promise.resolve());
   const comprehensionSaveFailedRef = useRef(false);
   const comprehensionSaveErrorRef = useRef(null);
@@ -92,6 +96,83 @@ export function useSession() {
     if (pendingOperationsRef.current === 0) {
       setLoading(false);
     }
+  }
+
+  function pwfRecordRetryKey(message, record = null) {
+    const participant = String(
+      record?.session_id
+      ?? pwfSessionRef.current?.sessionId
+      ?? message?.participant
+      ?? "",
+    ).trim();
+    const pwfTrial = Number(record?.pwf_trial ?? message?.record?.pwf_trial ?? message?.pwf_trial);
+    return `${participant}:${Number.isFinite(pwfTrial) ? pwfTrial : "unknown"}`;
+  }
+
+  function syncPwfRecordRetryState() {
+    const hasFailedRecords = failedPwfRecordsRef.current.size > 0;
+    pwfSaveFailedRef.current = hasFailedRecords;
+    setPwfRecordRetryAvailable(hasFailedRecords);
+  }
+
+  function persistFailedPwfRecords(studentId, resolvedStudyMode) {
+    try {
+      if (!window.sessionStorage) return;
+      const records = [...failedPwfRecordsRef.current.entries()].map(([key, entry]) => ({
+        key,
+        message: entry.message,
+      }));
+      if (!records.length) {
+        window.sessionStorage.removeItem(PWF_FAILED_RECORDS_STORAGE_KEY);
+        return;
+      }
+      window.sessionStorage.setItem(PWF_FAILED_RECORDS_STORAGE_KEY, JSON.stringify({
+        studentId: String(studentId ?? ""),
+        studyMode: resolvedStudyMode,
+        records,
+      }));
+    } catch {
+      // The in-memory retry queue still works when browser storage is unavailable.
+    }
+  }
+
+  function restoreFailedPwfRecords(studentId, resolvedStudyMode) {
+    failedPwfRecordsRef.current.clear();
+    try {
+      const saved = JSON.parse(window.sessionStorage?.getItem(PWF_FAILED_RECORDS_STORAGE_KEY) || "null");
+      if (
+        saved?.studentId === String(studentId)
+        && saved?.studyMode === resolvedStudyMode
+        && Array.isArray(saved.records)
+      ) {
+        saved.records.forEach((entry) => {
+          if (!entry?.key || !entry?.message || typeof entry.message !== "object") return;
+          failedPwfRecordsRef.current.set(entry.key, { message: entry.message });
+        });
+      }
+    } catch {
+      // Ignore corrupt local state and allow the participant to continue normally.
+    }
+    syncPwfRecordRetryState();
+  }
+
+  function rememberFailedPwfRecord(message, record = null) {
+    failedPwfRecordsRef.current.set(pwfRecordRetryKey(message, record), { message, record });
+    syncPwfRecordRetryState();
+    persistFailedPwfRecords(
+      pwfSessionRef.current?.studentId ?? message?.participant,
+      pwfSessionRef.current?.studyMode ?? getStudyModeFromUrl(),
+    );
+  }
+
+  function clearFailedPwfRecord(message, record = null) {
+    failedPwfRecordsRef.current.delete(pwfRecordRetryKey(message));
+    failedPwfRecordsRef.current.delete(pwfRecordRetryKey(message, record));
+    syncPwfRecordRetryState();
+    persistFailedPwfRecords(
+      pwfSessionRef.current?.studentId ?? message?.participant,
+      pwfSessionRef.current?.studyMode ?? getStudyModeFromUrl(),
+    );
   }
 
   function extractPwfEnrollment(message) {
@@ -127,7 +208,7 @@ export function useSession() {
     if (currentPromise?.studentId === sid && currentPromise?.studyMode === requestedStudyMode) return currentPromise.promise;
 
     pwfSaveQueueRef.current = Promise.resolve();
-    pwfSaveFailedRef.current = false;
+    restoreFailedPwfRecords(sid, requestedStudyMode);
     comprehensionSaveQueueRef.current = Promise.resolve();
     comprehensionSaveFailedRef.current = false;
     comprehensionSaveErrorRef.current = null;
@@ -223,10 +304,18 @@ export function useSession() {
 
   function enqueuePwfRecordSave(message) {
     const saveTask = pwfSaveQueueRef.current.then(async () => {
-      const session = await ensurePwfSession(message);
-      const record = buildPwfRecord(message, session);
-      await savePwfResults([record]);
-      setPwfRecords((prev) => upsertPwfRecord(prev, record));
+      let record = null;
+      try {
+        const session = await ensurePwfSession(message);
+        record = buildPwfRecord(message, session);
+        await savePwfResults([record]);
+        clearFailedPwfRecord(message, record);
+        setPwfRecords((prev) => upsertPwfRecord(prev, record));
+      } catch (error) {
+        // Keep the exact task payload so a later retry can recreate an upsert safely.
+        rememberFailedPwfRecord(message, record);
+        throw error;
+      }
     });
 
     pwfSaveQueueRef.current = saveTask.catch(() => {});
@@ -297,8 +386,34 @@ export function useSession() {
     try {
       await enqueuePwfRecordSave(message);
     } catch (e) {
-      pwfSaveFailedRef.current = true;
       setError(e.message);
+    } finally {
+      endOperation();
+    }
+  }
+
+  async function retryFailedPwfRecords() {
+    const failedRecords = [...failedPwfRecordsRef.current.values()];
+    if (!failedRecords.length) return true;
+
+    beginOperation();
+    setError(null);
+    let lastError = null;
+    try {
+      for (const { message } of failedRecords) {
+        try {
+          await enqueuePwfRecordSave(message);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (failedPwfRecordsRef.current.size > 0) {
+        throw lastError || new Error("PWF 結果の保存に失敗しました");
+      }
+      return true;
+    } catch (error) {
+      setError(error.message);
+      return false;
     } finally {
       endOperation();
     }
@@ -480,10 +595,12 @@ export function useSession() {
     pwfComprehensionRequired,
     loading,
     error,
+    pwfRecordRetryAvailable,
     handlePwfStart,
     handlePwfRecord,
     handlePwfComprehensionEvents,
     handlePwfComplete,
+    retryFailedPwfRecords,
     submitStep1,
     submitStep2,
     submitStep3,

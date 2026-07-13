@@ -6,6 +6,7 @@
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
     "dev": "npm --prefix frontend run dev",
     "preview": "npm --prefix frontend run preview",
+    "test:pwf-blocks": "node scripts/verify-pwf-blocks.mjs",
     "stress:test": "node scripts/stress-test.mjs"
   }
 }

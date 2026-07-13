@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export default function PwfFrame({ onStart, onRecord, onComprehensionEvents, onComplete, loading, error }) {
+export default function PwfFrame({
+  onStart,
+  onRecord,
+  onComprehensionEvents,
+  onComplete,
+  onRetryFailedRecords,
+  recordRetryAvailable,
+  loading,
+  error,
+}) {
   const completedRef = useRef(false);
   const pendingCompletionRef = useRef(null);
   const frameRef = useRef(null);
@@ -59,6 +68,13 @@ export default function PwfFrame({ onStart, onRecord, onComprehensionEvents, onC
     }
   }, [onComprehensionEvents]);
 
+  const retryFailedRecords = useCallback(async () => {
+    const recovered = await onRetryFailedRecords();
+    if (recovered && pendingCompletionRef.current) {
+      await submitCompletion(pendingCompletionRef.current);
+    }
+  }, [onRetryFailedRecords, submitCompletion]);
+
   useEffect(() => {
     function handleMessage(event) {
       if (event.origin !== window.location.origin) return;
@@ -93,11 +109,20 @@ export default function PwfFrame({ onStart, onRecord, onComprehensionEvents, onC
         src={pwfSrc}
         className="pwf-frame"
       />
-      {(loading || error || completionRetryAvailable) && (
+      {(loading || error || recordRetryAvailable || completionRetryAvailable) && (
         <div className="pwf-overlay">
           {loading && <p>保存中...</p>}
           {error && <p className="error">{error}</p>}
-          {completionRetryAvailable && !loading && (
+          {recordRetryAvailable && !loading && (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => void retryFailedRecords()}
+            >
+              保存を再試行
+            </button>
+          )}
+          {completionRetryAvailable && !recordRetryAvailable && !loading && (
             <button
               type="button"
               className="btn-primary"

@@ -21,12 +21,14 @@ export default function App() {
     stepData,
     ciSettlement,
     pwfComprehensionRequired,
+    pwfRecordRetryAvailable,
     loading,
     error,
     handlePwfStart,
     handlePwfRecord,
     handlePwfComprehensionEvents,
     handlePwfComplete,
+    retryFailedPwfRecords,
     submitStep1,
     submitStep2,
     submitStep3,
@@ -47,6 +49,8 @@ export default function App() {
           onRecord={handlePwfRecord}
           onComprehensionEvents={handlePwfComprehensionEvents}
           onComplete={handlePwfComplete}
+          onRetryFailedRecords={retryFailedPwfRecords}
+          recordRetryAvailable={pwfRecordRetryAvailable}
           loading={loading}
           error={error}
         />
