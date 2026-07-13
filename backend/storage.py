@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -16,6 +17,15 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
 _SCHEMA_LOCK_ID = 440866261
+_SESSION_ID_TABLES = (
+    "experiment_sessions",
+    "ci_results",
+    "ci_settlements",
+    "utility_results",
+    "pwf_results",
+    "pwf_comprehension_events",
+)
+_SESSION_ID_CHILD_TABLES = _SESSION_ID_TABLES[1:]
 _RETRYABLE_DB_ERRORS = (
     psycopg.errors.DeadlockDetected,
     psycopg.errors.SerializationFailure,
@@ -140,6 +150,171 @@ def _database_schema_ready(cur) -> bool:
     )
 
 
+def _session_id_column_types(cur) -> dict[str, str]:
+    """Return the underlying PostgreSQL type for existing session_id columns."""
+    cur.execute(
+        """
+        SELECT table_name, udt_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ANY(%s)
+          AND column_name = 'session_id'
+        """,
+        (list(_SESSION_ID_TABLES),),
+    )
+    return {row["table_name"]: row["udt_name"] for row in cur.fetchall()}
+
+
+def _drop_session_id_foreign_keys(cur, table_name: str) -> None:
+    """Drop only foreign keys that use table_name.session_id before a type upgrade."""
+    cur.execute(
+        """
+        SELECT constraint_name
+        FROM information_schema.key_column_usage
+        WHERE table_schema = 'public'
+          AND table_name = %s
+          AND column_name = 'session_id'
+          AND constraint_name IN (
+              SELECT constraint_name
+              FROM information_schema.table_constraints
+              WHERE table_schema = 'public'
+                AND table_name = %s
+                AND constraint_type = 'FOREIGN KEY'
+          )
+        """,
+        (table_name, table_name),
+    )
+    for row in cur.fetchall():
+        cur.execute(
+            sql.SQL("ALTER TABLE {} DROP CONSTRAINT {}").format(
+                sql.Identifier(table_name),
+                sql.Identifier(row["constraint_name"]),
+            )
+        )
+
+
+def _legacy_session_ids_are_uuid_compatible(cur, table_name: str) -> bool:
+    """Check the legacy text column before converting it without losing data."""
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT COUNT(*) AS invalid_count
+            FROM {}
+            WHERE session_id IS NULL
+               OR btrim(session_id::text) !~* %s
+            """
+        ).format(sql.Identifier(table_name)),
+        (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",),
+    )
+    return int(cur.fetchone()["invalid_count"]) == 0
+
+
+def _add_session_id_foreign_key_if_safe(cur, table_name: str) -> None:
+    """Restore the intended FK only when legacy records all have a parent session."""
+    cur.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.key_column_usage AS kcu
+            JOIN information_schema.table_constraints AS tc
+              ON tc.constraint_schema = kcu.constraint_schema
+             AND tc.constraint_name = kcu.constraint_name
+             AND tc.table_name = kcu.table_name
+            WHERE kcu.table_schema = 'public'
+              AND kcu.table_name = %s
+              AND kcu.column_name = 'session_id'
+              AND tc.constraint_type = 'FOREIGN KEY'
+        ) AS has_foreign_key
+        """,
+        (table_name,),
+    )
+    if cur.fetchone()["has_foreign_key"]:
+        return
+
+    cur.execute(
+        sql.SQL(
+            """
+            SELECT COUNT(*) AS orphan_count
+            FROM {} AS child
+            LEFT JOIN experiment_sessions AS parent
+              ON parent.session_id = child.session_id
+            WHERE parent.session_id IS NULL
+            """
+        ).format(sql.Identifier(table_name))
+    )
+    if int(cur.fetchone()["orphan_count"]) != 0:
+        return
+
+    cur.execute(
+        sql.SQL(
+            "ALTER TABLE {} ADD CONSTRAINT {} "
+            "FOREIGN KEY (session_id) REFERENCES experiment_sessions(session_id) ON DELETE CASCADE"
+        ).format(
+            sql.Identifier(table_name),
+            sql.Identifier(f"{table_name}_session_id_fkey"),
+        )
+    )
+
+
+def _migrate_legacy_session_id_columns(cur) -> None:
+    """Upgrade pre-UUID session_id columns before CREATE TABLE parses FK clauses.
+
+    Earlier deployments stored child session IDs as TEXT. PostgreSQL validates
+    the FK clause in CREATE TABLE IF NOT EXISTS against that existing column,
+    so the normal schema migration never gets a chance to run. The conversion
+    is guarded by a UUID-format check and is performed inside ensure_schema's
+    advisory-locked transaction.
+    """
+    column_types = _session_id_column_types(cur)
+    legacy_tables = [
+        table_name
+        for table_name, type_name in column_types.items()
+        if type_name != "uuid"
+    ]
+    if not legacy_tables:
+        return
+
+    unsupported = {
+        table_name: column_types[table_name]
+        for table_name in legacy_tables
+        if column_types[table_name] not in {"text", "varchar", "bpchar"}
+    }
+    if unsupported:
+        details = ", ".join(f"{table_name}={type_name}" for table_name, type_name in unsupported.items())
+        raise StorageError(f"Unsupported legacy session_id column type: {details}")
+
+    for table_name in legacy_tables:
+        if not _legacy_session_ids_are_uuid_compatible(cur, table_name):
+            raise StorageError(
+                f"Cannot migrate {table_name}.session_id to UUID because it contains non-UUID values"
+            )
+
+    # Parent conversion requires child FKs to be removed first. A child that is
+    # still TEXT cannot have a valid FK to a UUID parent, but this also safely
+    # handles partially migrated databases.
+    if "experiment_sessions" in legacy_tables:
+        for child_table in _SESSION_ID_CHILD_TABLES:
+            if child_table in column_types:
+                _drop_session_id_foreign_keys(cur, child_table)
+
+    for table_name in legacy_tables:
+        if table_name != "experiment_sessions":
+            _drop_session_id_foreign_keys(cur, table_name)
+        cur.execute(
+            sql.SQL(
+                "ALTER TABLE {} ALTER COLUMN session_id TYPE UUID "
+                "USING btrim(session_id::text)::uuid"
+            ).format(sql.Identifier(table_name))
+        )
+
+    # Re-establish referential integrity when legacy data is complete. If an
+    # old table contains orphaned historical rows, leave it intact rather than
+    # deleting data; future session starts remain unblocked.
+    for child_table in _SESSION_ID_CHILD_TABLES:
+        if child_table in column_types:
+            _add_session_id_foreign_key_if_safe(cur, child_table)
+
+
 def _backfill_student_id_hashes(cur) -> None:
     """Populate the new anonymized identifier for rows saved before this column existed."""
     table_keys = (
@@ -181,11 +356,8 @@ def ensure_schema() -> None:
 
     with _connect() as conn:
         with conn.cursor() as cur:
-            if _database_schema_ready(cur):
-                _schema_ready = True
-                return
-
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
+            _migrate_legacy_session_id_columns(cur)
             if _database_schema_ready(cur):
                 _schema_ready = True
                 return
