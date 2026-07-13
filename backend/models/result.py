@@ -67,6 +67,10 @@ class CiResult(BaseModel):
     student_id_last_digit: str = ""
     amount_level: str = "low"
     amount_multiplier: float = 1
+    ci_assignment_block: Optional[int] = None
+    ci_assignment_position: Optional[int] = None
+    ci_assignment_block_size: Optional[int] = None
+    ci_assignment_condition: Optional[str] = None
     p: float
     q: float
     r: float

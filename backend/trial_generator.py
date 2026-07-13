@@ -1,33 +1,37 @@
 import random
+from typing import Any
 
 PROB_GRID = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
 AMOUNT_GRID = list(range(10, 110, 10))  # 10〜100（10刻み）
 TRIALS_PER_BLOCK = 5
 PILOT_N = 2
-FULL_N_OPTIONS = [2, 3]
 
 
-def assign_full_n(student_id: str) -> int:
-    digits = "".join(ch for ch in str(student_id) if ch.isdigit())
-    if not digits:
-        return FULL_N_OPTIONS[0]
-    bucket = int(digits[-2:]) if len(digits) >= 2 else int(digits[-1])
-    return 2 if bucket % 4 in {0, 1} else 3
-
-
-def assign_ci_amount_level(student_id: str) -> dict:
-    normalized = str(student_id).strip()
-    last_digit_text = normalized[-1:] if normalized else ""
-    last_digit = int(last_digit_text) if last_digit_text.isdigit() else 1
-    is_high_amount = last_digit % 2 == 0
-    return {
-        "student_id_last_digit": last_digit_text,
-        "amount_level": "high" if is_high_amount else "low",
-        "amount_multiplier": 100 if is_high_amount else 1,
+def _validate_assignment(study_mode: str, ci_assignment: dict[str, Any]) -> None:
+    """Validate the server-owned condition before generating visible trials."""
+    required_fields = {
+        "assignment_block",
+        "assignment_position",
+        "assignment_block_size",
+        "assignment_condition",
+        "assigned_n",
+        "amount_level",
+        "amount_multiplier",
     }
+    missing = sorted(required_fields.difference(ci_assignment))
+    if missing:
+        raise ValueError(f"CI assignment is missing required fields: {', '.join(missing)}")
+    if ci_assignment["assigned_n"] not in {2, 3}:
+        raise ValueError("CI assignment N must be 2 or 3")
+    if ci_assignment["amount_level"] not in {"low", "high"}:
+        raise ValueError("CI assignment amount level must be low or high")
+    if ci_assignment["amount_multiplier"] not in {1, 100}:
+        raise ValueError("CI assignment amount multiplier must be 1 or 100")
+    if study_mode == "pilot" and ci_assignment["assigned_n"] != PILOT_N:
+        raise ValueError("Pilot CI assignments must use N=2")
 
 
-def generate_trial(N: int, trial_num: int, block: int, amount_assignment: dict) -> dict:
+def generate_trial(N: int, trial_num: int, block: int, ci_assignment: dict[str, Any]) -> dict:
     """
     制約：p > q かつ r != p かつ r != q かつ
     p^N >= 0.05 かつ q^N >= 0.05 かつ r^N >= 0.05
@@ -47,16 +51,22 @@ def generate_trial(N: int, trial_num: int, block: int, amount_assignment: dict) 
             and r**N >= 0.05
         ):
             break
-    amount_multiplier = amount_assignment["amount_multiplier"]
+    amount_multiplier = ci_assignment["amount_multiplier"]
     x = random.choice(AMOUNT_GRID) * amount_multiplier
     x_prime = random.choice(AMOUNT_GRID) * amount_multiplier
     return {
         "trial": trial_num,
         "block": block,
         "N": N,
-        "student_id_last_digit": amount_assignment["student_id_last_digit"],
-        "amount_level": amount_assignment["amount_level"],
+        # Kept as an empty legacy column for compatibility with earlier CSV schemas.
+        # CI condition assignment is no longer based on the student ID.
+        "student_id_last_digit": "",
+        "amount_level": ci_assignment["amount_level"],
         "amount_multiplier": amount_multiplier,
+        "ci_assignment_block": ci_assignment["assignment_block"],
+        "ci_assignment_position": ci_assignment["assignment_position"],
+        "ci_assignment_block_size": ci_assignment["assignment_block_size"],
+        "ci_assignment_condition": ci_assignment["assignment_condition"],
         "p": round(p, 10),
         "q": round(q, 10),
         "r": round(r, 10),
@@ -65,10 +75,10 @@ def generate_trial(N: int, trial_num: int, block: int, amount_assignment: dict) 
     }
 
 
-def generate_all_trials(study_mode: str = "full", student_id: str = "") -> list[dict]:
-    """セッション開始時に全試行を事前生成する。"""
-    assigned_n = PILOT_N if study_mode == "pilot" else assign_full_n(student_id)
-    amount_assignment = assign_ci_amount_level(student_id)
+def generate_all_trials(study_mode: str, ci_assignment: dict[str, Any]) -> list[dict]:
+    """Generate all CI trials from the condition allocated by the server."""
+    _validate_assignment(study_mode, ci_assignment)
+    assigned_n = int(ci_assignment["assigned_n"])
     trials = []
     for trial_num in range(1, TRIALS_PER_BLOCK + 1):
         trials.append(
@@ -76,7 +86,7 @@ def generate_all_trials(study_mode: str = "full", student_id: str = "") -> list[
                 N=assigned_n,
                 trial_num=trial_num,
                 block=1,
-                amount_assignment=amount_assignment,
+                ci_assignment=ci_assignment,
             )
         )
     return trials

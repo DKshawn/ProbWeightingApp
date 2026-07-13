@@ -2,9 +2,11 @@ import hashlib
 import json
 import os
 import random
+import secrets
+import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
@@ -16,6 +18,7 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
 _SCHEMA_LOCK_ID = 440866261
+_CI_ASSIGNMENT_LOCK_ID = 440866262
 _RETRYABLE_DB_ERRORS = (
     psycopg.errors.DeadlockDetected,
     psycopg.errors.SerializationFailure,
@@ -28,6 +31,8 @@ _memory_ci_settlements: dict[str, dict[str, Any]] = {}
 _memory_utility_results: list[dict[str, Any]] = []
 _memory_pwf_results: list[dict[str, Any]] = []
 _memory_pwf_comprehension_events: list[dict[str, Any]] = []
+_memory_ci_assignment_slots: list[dict[str, Any]] = []
+_memory_ci_assignment_lock = threading.Lock()
 
 
 class StorageError(RuntimeError):
@@ -75,11 +80,19 @@ def _database_schema_ready(cur) -> bool:
             "session_id", "student_id", "student_id_hash", "name", "gender", "consent_version", "consent_accepted_at", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trials", "status", "pwf_completed",
             "pwf_completed_at", "pwf_comprehension_version", "completed_at", "last_seen_at", "created_at",
+            "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size",
+            "ci_assignment_condition", "ci_assigned_n", "ci_amount_level", "ci_amount_multiplier",
+        },
+        "ci_assignment_slots": {
+            "id", "study_mode", "assignment_block", "assignment_position", "assignment_block_size",
+            "assignment_condition", "assigned_n", "amount_level", "amount_multiplier",
+            "claimed_session_id", "claimed_at", "created_at",
         },
         "ci_results": {
             "session_id", "student_id", "student_id_hash", "name", "gender", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trial", "block", "n", "student_id_last_digit",
             "amount_level", "amount_multiplier", "p", "q", "r", "x", "x_prime",
+            "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size", "ci_assignment_condition",
             "y", "s", "y_prime", "pn", "qn", "rn", "sn", "choice",
             "ci_satisfied", "response_time_ms", "timed_out", "payment_details",
             "trial_payment_total", "mirror_order", "mirror_left_option", "mirror_right_option",
@@ -203,6 +216,13 @@ def ensure_schema() -> None:
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    ci_assignment_block INTEGER,
+                    ci_assignment_position INTEGER,
+                    ci_assignment_block_size INTEGER,
+                    ci_assignment_condition TEXT,
+                    ci_assigned_n INTEGER,
+                    ci_amount_level TEXT,
+                    ci_amount_multiplier DOUBLE PRECISION,
                     trials JSONB NOT NULL,
                     status TEXT NOT NULL DEFAULT 'started',
                     pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -211,6 +231,22 @@ def ensure_schema() -> None:
                     completed_at TIMESTAMPTZ,
                     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS ci_assignment_slots (
+                    id BIGSERIAL PRIMARY KEY,
+                    study_mode TEXT NOT NULL CHECK (study_mode IN ('full', 'pilot')),
+                    assignment_block INTEGER NOT NULL CHECK (assignment_block >= 1),
+                    assignment_position INTEGER NOT NULL CHECK (assignment_position >= 1),
+                    assignment_block_size INTEGER NOT NULL CHECK (assignment_block_size IN (2, 4)),
+                    assignment_condition TEXT NOT NULL,
+                    assigned_n INTEGER NOT NULL CHECK (assigned_n IN (2, 3)),
+                    amount_level TEXT NOT NULL CHECK (amount_level IN ('low', 'high')),
+                    amount_multiplier DOUBLE PRECISION NOT NULL CHECK (amount_multiplier IN (1, 100)),
+                    claimed_session_id UUID UNIQUE REFERENCES experiment_sessions(session_id) ON DELETE SET NULL,
+                    claimed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (study_mode, assignment_block, assignment_position)
                 );
 
                 CREATE TABLE IF NOT EXISTS ci_results (
@@ -229,6 +265,10 @@ def ensure_schema() -> None:
                     student_id_last_digit TEXT,
                     amount_level TEXT NOT NULL DEFAULT 'low',
                     amount_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    ci_assignment_block INTEGER,
+                    ci_assignment_position INTEGER,
+                    ci_assignment_block_size INTEGER,
+                    ci_assignment_condition TEXT,
                     p DOUBLE PRECISION NOT NULL,
                     q DOUBLE PRECISION NOT NULL,
                     r DOUBLE PRECISION NOT NULL,
@@ -391,6 +431,13 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_position INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block_size INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_condition TEXT,
+                    ADD COLUMN IF NOT EXISTS ci_assigned_n INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_amount_level TEXT,
+                    ADD COLUMN IF NOT EXISTS ci_amount_multiplier DOUBLE PRECISION,
                     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'started',
                     ADD COLUMN IF NOT EXISTS pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS pwf_completed_at TIMESTAMPTZ,
@@ -414,6 +461,10 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS student_id_last_digit TEXT,
                     ADD COLUMN IF NOT EXISTS amount_level TEXT NOT NULL DEFAULT 'low',
                     ADD COLUMN IF NOT EXISTS amount_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_position INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block_size INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_condition TEXT,
                     ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
                     ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -511,6 +562,16 @@ def ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_ci_results_experiment_mode
                     ON ci_results(experiment_mode);
 
+                CREATE INDEX IF NOT EXISTS idx_ci_results_assignment
+                    ON ci_results(ci_assignment_condition, ci_assignment_block);
+
+                CREATE INDEX IF NOT EXISTS idx_ci_assignment_slots_available
+                    ON ci_assignment_slots(study_mode, assignment_block, assignment_position)
+                    WHERE claimed_session_id IS NULL;
+
+                CREATE INDEX IF NOT EXISTS idx_ci_assignment_slots_session
+                    ON ci_assignment_slots(claimed_session_id);
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_results_mirror_order
                     ON ci_results(session_id, mirror_order)
                     WHERE mirror_order IS NOT NULL;
@@ -561,6 +622,180 @@ def ensure_schema() -> None:
     _schema_ready = True
 
 
+def _ci_assignment_conditions(study_mode: str) -> list[dict[str, Any]]:
+    """Return one balanced condition set for the requested study mode."""
+    if study_mode == "pilot":
+        # Pilot sessions retain the protocol's fixed N=2 while balancing the
+        # two amount scales. Formal sessions use all four cells below.
+        cells = [
+            ("N2_low", 2, "low", 1),
+            ("N2_high", 2, "high", 100),
+        ]
+    elif study_mode == "full":
+        cells = [
+            ("N2_low", 2, "low", 1),
+            ("N2_high", 2, "high", 100),
+            ("N3_low", 3, "low", 1),
+            ("N3_high", 3, "high", 100),
+        ]
+    else:
+        raise StorageError("Unsupported CI study mode for condition assignment")
+    return [
+        {
+            "assignment_condition": condition,
+            "assigned_n": assigned_n,
+            "amount_level": amount_level,
+            "amount_multiplier": amount_multiplier,
+        }
+        for condition, assigned_n, amount_level, amount_multiplier in cells
+    ]
+
+
+def _assignment_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "assignment_block": int(row["assignment_block"]),
+        "assignment_position": int(row["assignment_position"]),
+        "assignment_block_size": int(row["assignment_block_size"]),
+        "assignment_condition": row["assignment_condition"],
+        "assigned_n": int(row["assigned_n"]),
+        "amount_level": row["amount_level"],
+        "amount_multiplier": float(row["amount_multiplier"]),
+    }
+
+
+def _claim_memory_ci_assignment(session_id: str, study_mode: str) -> dict[str, Any]:
+    available = sorted(
+        (
+            slot
+            for slot in _memory_ci_assignment_slots
+            if slot["study_mode"] == study_mode and slot.get("claimed_session_id") is None
+        ),
+        key=lambda slot: (slot["assignment_block"], slot["assignment_position"]),
+    )
+    if not available:
+        assignment_block = max(
+            (slot["assignment_block"] for slot in _memory_ci_assignment_slots if slot["study_mode"] == study_mode),
+            default=0,
+        ) + 1
+        cells = _ci_assignment_conditions(study_mode)
+        secrets.SystemRandom().shuffle(cells)
+        for assignment_position, cell in enumerate(cells, start=1):
+            _memory_ci_assignment_slots.append(
+                {
+                    "study_mode": study_mode,
+                    "assignment_block": assignment_block,
+                    "assignment_position": assignment_position,
+                    "assignment_block_size": len(cells),
+                    **cell,
+                    "claimed_session_id": None,
+                    "claimed_at": None,
+                }
+            )
+        available = sorted(
+            (
+                slot
+                for slot in _memory_ci_assignment_slots
+                if slot["study_mode"] == study_mode and slot.get("claimed_session_id") is None
+            ),
+            key=lambda slot: (slot["assignment_block"], slot["assignment_position"]),
+        )
+
+    slot = available[0]
+    slot["claimed_session_id"] = session_id
+    slot["claimed_at"] = datetime.now(timezone.utc).isoformat()
+    return _assignment_from_row(slot)
+
+
+def _claim_ci_assignment(cur, session_id: str, study_mode: str) -> dict[str, Any]:
+    """Claim the next slot while the transaction-level advisory lock is held."""
+    cur.execute(
+        """
+        SELECT
+            id,
+            assignment_block,
+            assignment_position,
+            assignment_block_size,
+            assignment_condition,
+            assigned_n,
+            amount_level,
+            amount_multiplier
+        FROM ci_assignment_slots
+        WHERE study_mode = %s AND claimed_session_id IS NULL
+        ORDER BY assignment_block, assignment_position
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (study_mode,),
+    )
+    slot = cur.fetchone()
+    if slot is None:
+        cur.execute(
+            """
+            SELECT COALESCE(MAX(assignment_block), 0) + 1 AS next_assignment_block
+            FROM ci_assignment_slots
+            WHERE study_mode = %s
+            """,
+            (study_mode,),
+        )
+        assignment_block = int(cur.fetchone()["next_assignment_block"])
+        cells = _ci_assignment_conditions(study_mode)
+        secrets.SystemRandom().shuffle(cells)
+        cur.executemany(
+            """
+            INSERT INTO ci_assignment_slots (
+                study_mode, assignment_block, assignment_position, assignment_block_size,
+                assignment_condition, assigned_n, amount_level, amount_multiplier
+            )
+            VALUES (%(study_mode)s, %(assignment_block)s, %(assignment_position)s, %(assignment_block_size)s,
+                    %(assignment_condition)s, %(assigned_n)s, %(amount_level)s, %(amount_multiplier)s)
+            """,
+            [
+                {
+                    "study_mode": study_mode,
+                    "assignment_block": assignment_block,
+                    "assignment_position": position,
+                    "assignment_block_size": len(cells),
+                    **cell,
+                }
+                for position, cell in enumerate(cells, start=1)
+            ],
+        )
+        cur.execute(
+            """
+            SELECT
+                id,
+                assignment_block,
+                assignment_position,
+                assignment_block_size,
+                assignment_condition,
+                assigned_n,
+                amount_level,
+                amount_multiplier
+            FROM ci_assignment_slots
+            WHERE study_mode = %s AND assignment_block = %s AND claimed_session_id IS NULL
+            ORDER BY assignment_position
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (study_mode, assignment_block),
+        )
+        slot = cur.fetchone()
+    if slot is None:
+        raise StorageError("Unable to claim a CI assignment slot")
+
+    cur.execute(
+        """
+        UPDATE ci_assignment_slots
+        SET claimed_session_id = %s, claimed_at = NOW()
+        WHERE id = %s AND claimed_session_id IS NULL
+        """,
+        (session_id, slot["id"]),
+    )
+    if cur.rowcount != 1:
+        raise StorageError("CI assignment slot was claimed concurrently")
+    return _assignment_from_row(slot)
+
+
 def create_session(
     session_id: str,
     student_id: str,
@@ -568,63 +803,103 @@ def create_session(
     gender: str,
     consent_version: str,
     consent_accepted_at: datetime,
-    trials: list[dict],
+    trial_factory: Callable[[dict[str, Any]], list[dict]],
     study_mode: str = "full",
     experiment_mode: str = "normal",
     time_pressure_seconds: int = 0,
     pwf_comprehension_version: str | None = None,
-) -> None:
+) -> list[dict]:
     student_id_hash = hash_student_id(student_id)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
-        _memory_sessions[session_id] = {
-            "session_id": session_id,
-            "student_id": student_id,
-            "student_id_hash": student_id_hash,
-            "name": name,
-            "gender": gender,
-            "consent_version": consent_version,
-            "consent_accepted_at": consent_accepted_at.isoformat(),
-            "study_mode": study_mode,
-            "experiment_mode": experiment_mode,
-            "time_pressure_seconds": time_pressure_seconds,
-            "trials": trials,
-            "status": "started",
-            "pwf_completed": False,
-            "pwf_completed_at": None,
-            "pwf_comprehension_version": pwf_comprehension_version,
-            "completed_at": None,
-            "last_seen_at": datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return
+        with _memory_ci_assignment_lock:
+            ci_assignment = _claim_memory_ci_assignment(session_id, study_mode)
+            trials = trial_factory(ci_assignment)
+            _memory_sessions[session_id] = {
+                "session_id": session_id,
+                "student_id": student_id,
+                "student_id_hash": student_id_hash,
+                "name": name,
+                "gender": gender,
+                "consent_version": consent_version,
+                "consent_accepted_at": consent_accepted_at.isoformat(),
+                "study_mode": study_mode,
+                "experiment_mode": experiment_mode,
+                "time_pressure_seconds": time_pressure_seconds,
+                "trials": trials,
+                "ci_assignment_block": ci_assignment["assignment_block"],
+                "ci_assignment_position": ci_assignment["assignment_position"],
+                "ci_assignment_block_size": ci_assignment["assignment_block_size"],
+                "ci_assignment_condition": ci_assignment["assignment_condition"],
+                "ci_assigned_n": ci_assignment["assigned_n"],
+                "ci_amount_level": ci_assignment["amount_level"],
+                "ci_amount_multiplier": ci_assignment["amount_multiplier"],
+                "status": "started",
+                "pwf_completed": False,
+                "pwf_completed_at": None,
+                "pwf_comprehension_version": pwf_comprehension_version,
+                "completed_at": None,
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        return trials
 
     ensure_schema()
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO experiment_sessions (
-                    session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
-                    study_mode, experiment_mode, time_pressure_seconds, trials, pwf_comprehension_version
+    def write_session() -> list[dict]:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_CI_ASSIGNMENT_LOCK_ID,))
+                # The session exists before its assignment row is claimed so the
+                # assignment table can enforce a real foreign key. The incomplete
+                # row is never visible because the whole operation is one transaction.
+                cur.execute(
+                    """
+                    INSERT INTO experiment_sessions (
+                        session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
+                        study_mode, experiment_mode, time_pressure_seconds, trials, pwf_comprehension_version
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        session_id,
+                        student_id,
+                        student_id_hash,
+                        name,
+                        gender,
+                        consent_version,
+                        consent_accepted_at,
+                        study_mode,
+                        experiment_mode,
+                        time_pressure_seconds,
+                        Jsonb([]),
+                        pwf_comprehension_version,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    student_id,
-                    student_id_hash,
-                    name,
-                    gender,
-                    consent_version,
-                    consent_accepted_at,
-                    study_mode,
-                    experiment_mode,
-                    time_pressure_seconds,
-                    Jsonb(trials),
-                    pwf_comprehension_version,
-                ),
-            )
-        conn.commit()
+                ci_assignment = _claim_ci_assignment(cur, session_id, study_mode)
+                trials = trial_factory(ci_assignment)
+                cur.execute(
+                    """
+                    UPDATE experiment_sessions
+                    SET
+                        trials = %(trials)s,
+                        ci_assignment_block = %(assignment_block)s,
+                        ci_assignment_position = %(assignment_position)s,
+                        ci_assignment_block_size = %(assignment_block_size)s,
+                        ci_assignment_condition = %(assignment_condition)s,
+                        ci_assigned_n = %(assigned_n)s,
+                        ci_amount_level = %(amount_level)s,
+                        ci_amount_multiplier = %(amount_multiplier)s
+                    WHERE session_id = %(session_id)s
+                    """,
+                    {
+                        "session_id": session_id,
+                        "trials": Jsonb(trials),
+                        **ci_assignment,
+                    },
+                )
+            conn.commit()
+        return trials
+
+    return _with_retry(write_session)
 
 
 def update_session_enrollment(
@@ -705,6 +980,13 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -752,6 +1034,13 @@ def find_completed_submission(student_id: str, study_mode: str) -> dict[str, Any
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -801,6 +1090,13 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -916,6 +1212,10 @@ def save_ci_result(record: dict[str, Any]) -> None:
     record = {
         **record,
         "student_id_hash": hash_student_id(record["student_id"]),
+        "ci_assignment_block": record.get("ci_assignment_block"),
+        "ci_assignment_position": record.get("ci_assignment_position"),
+        "ci_assignment_block_size": record.get("ci_assignment_block_size"),
+        "ci_assignment_condition": record.get("ci_assignment_condition"),
         "payment_details": {},
         "trial_payment_total": 0,
     }
@@ -945,6 +1245,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                 INSERT INTO ci_results (
                     session_id, student_id, student_id_hash, name, gender, study_mode, experiment_mode, time_pressure_seconds,
                     trial, block, n, student_id_last_digit, amount_level, amount_multiplier,
+                    ci_assignment_block, ci_assignment_position, ci_assignment_block_size, ci_assignment_condition,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
                     pn, qn, rn, sn,
@@ -956,6 +1257,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(trial)s, %(block)s, %(N)s,
                     %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
+                    %(ci_assignment_block)s, %(ci_assignment_position)s, %(ci_assignment_block_size)s, %(ci_assignment_condition)s,
                     %(p)s, %(q)s, %(r)s, %(x)s, %(x_prime)s,
                     %(y)s, %(s)s, %(y_prime)s,
                     %(pN)s, %(qN)s, %(rN)s, %(sN)s,
@@ -975,6 +1277,10 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     student_id_last_digit = EXCLUDED.student_id_last_digit,
                     amount_level = EXCLUDED.amount_level,
                     amount_multiplier = EXCLUDED.amount_multiplier,
+                    ci_assignment_block = EXCLUDED.ci_assignment_block,
+                    ci_assignment_position = EXCLUDED.ci_assignment_position,
+                    ci_assignment_block_size = EXCLUDED.ci_assignment_block_size,
+                    ci_assignment_condition = EXCLUDED.ci_assignment_condition,
                     p = EXCLUDED.p,
                     q = EXCLUDED.q,
                     r = EXCLUDED.r,
@@ -1552,6 +1858,10 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     student_id_last_digit,
                     amount_level,
                     amount_multiplier,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
                     p,
                     q,
                     r,
@@ -2056,6 +2366,10 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     cr.student_id_last_digit,
                     cr.amount_level,
                     cr.amount_multiplier,
+                    cr.ci_assignment_block,
+                    cr.ci_assignment_position,
+                    cr.ci_assignment_block_size,
+                    cr.ci_assignment_condition,
                     cr.p,
                     cr.q,
                     cr.r,

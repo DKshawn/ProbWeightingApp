@@ -121,9 +121,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PWF_TIME_PRESSURE_SECONDS = 15
-
-
 def _raise_storage_http_error(exc: StorageError) -> None:
     if isinstance(exc, DuplicateSubmissionError):
         raise HTTPException(
@@ -136,16 +133,6 @@ def _raise_storage_http_error(exc: StorageError) -> None:
 
 
 def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
-    return "normal", 0
-
-
-def _assign_pwf_experiment_mode(student_id: str) -> tuple[str, int]:
-    if not student_id or not student_id[-1].isdigit():
-        raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
-
-    last_digit = int(student_id[-1])
-    if last_digit % 2 == 0:
-        return "time_pressure", PWF_TIME_PRESSURE_SECONDS
     return "normal", 0
 
 
@@ -203,9 +190,16 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
         "consent_accepted_at": session.get("consent_accepted_at"),
         "experiment_mode": session.get("experiment_mode", "normal"),
         "time_pressure_seconds": session.get("time_pressure_seconds", 0),
-        "pwf_experiment_mode": _assign_pwf_experiment_mode(session["student_id"])[0],
-        "pwf_time_pressure_seconds": _assign_pwf_experiment_mode(session["student_id"])[1],
         "study_mode": session.get("study_mode", "full"),
+        "ci_assignment": {
+            "assignment_block": session.get("ci_assignment_block"),
+            "assignment_position": session.get("ci_assignment_position"),
+            "assignment_block_size": session.get("ci_assignment_block_size"),
+            "assignment_condition": session.get("ci_assignment_condition"),
+            "assigned_n": session.get("ci_assigned_n"),
+            "amount_level": session.get("ci_amount_level"),
+            "amount_multiplier": session.get("ci_amount_multiplier"),
+        },
         "session_status": session.get("status", "started"),
         "resumed": resumed,
         "pwf_completed": pwf_completed,
@@ -250,7 +244,6 @@ def start_session(req: SessionStartRequest):
             return _build_session_response(resume_session, resumed=True)
 
         session_id = str(uuid.uuid4())
-        trials = generate_all_trials(study_mode=study_mode, student_id=student_id)
         create_session(
             session_id,
             student_id,
@@ -258,7 +251,10 @@ def start_session(req: SessionStartRequest):
             req.gender,
             req.consent_version,
             req.consent_accepted_at,
-            trials,
+            lambda ci_assignment: generate_all_trials(
+                study_mode=study_mode,
+                ci_assignment=ci_assignment,
+            ),
             study_mode,
             experiment_mode,
             time_pressure_seconds,
@@ -276,9 +272,28 @@ def start_session(req: SessionStartRequest):
 # ---------------------------------------------------------------------------
 @app.post("/api/ci-results")
 def save_ci_result(result: CiResult):
-    _session_can_accept_writes(result.session_id)
+    session = _session_can_accept_writes(result.session_id)
 
     record = result.model_dump()
+    if session.get("ci_assigned_n") in {2, 3}:
+        # Conditions are server-owned. Ignore stale or altered client metadata.
+        assigned_n = int(session["ci_assigned_n"])
+        record.update({
+            "N": assigned_n,
+            "student_id_last_digit": "",
+            "amount_level": session["ci_amount_level"],
+            "amount_multiplier": session["ci_amount_multiplier"],
+            "ci_assignment_block": session["ci_assignment_block"],
+            "ci_assignment_position": session["ci_assignment_position"],
+            "ci_assignment_block_size": session["ci_assignment_block_size"],
+            "ci_assignment_condition": session["ci_assignment_condition"],
+        })
+        record.update({
+            "pN": round(float(record["p"]) ** assigned_n, 10),
+            "qN": round(float(record["q"]) ** assigned_n, 10),
+            "rN": round(float(record["r"]) ** assigned_n, 10),
+            "sN": round(float(record["s"]) ** assigned_n, 10),
+        })
     try:
         save_ci_result_record(record)
         session_completed = mark_session_completed_if_ready(result.session_id)
@@ -460,6 +475,7 @@ CI_CSV_COLUMNS = [
     "StudentID", "StudentIDHash", "Name", "Gender", "Trial", "Block", "N",
     "study_mode", "experiment_mode", "time_pressure_seconds",
     "student_id_last_digit", "amount_level", "amount_multiplier",
+    "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size", "ci_assignment_condition",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
@@ -499,6 +515,10 @@ CI_FIELD_MAP = {
     "student_id_last_digit": "student_id_last_digit",
     "amount_level": "amount_level",
     "amount_multiplier": "amount_multiplier",
+    "ci_assignment_block": "ci_assignment_block",
+    "ci_assignment_position": "ci_assignment_position",
+    "ci_assignment_block_size": "ci_assignment_block_size",
+    "ci_assignment_condition": "ci_assignment_condition",
     "p": "p",
     "q": "q",
     "r": "r",
