@@ -17,6 +17,13 @@ The CI module elicits the responses needed to test Compound Invariance. Each CI
 trial includes four steps; its payment details are recorded, and one CI trial is
 randomly selected for the CI module's final payment.
 
+For the formal CI study, the server assigns new sessions in randomly ordered
+four-person blocks: `N=2 × low amount`, `N=2 × high amount`, `N=3 × low
+amount`, and `N=3 × high amount`. Assignment is persisted with the session, so
+it is unchanged on resume. Participants start immediately; they do not wait for
+the other three positions in their block. Pilot sessions preserve the fixed
+`N=2` design and balance only the two amount levels in two-person blocks.
+
 ## Vercel + Neon Deployment
 
 This repository is configured to deploy as a single Vercel project:
@@ -73,6 +80,7 @@ ephemeral and experiment results will be lost.
 The API creates tables automatically on first database use:
 
 - `experiment_sessions`: one row per experiment session, including generated CI trials
+- `ci_assignment_slots`: server-owned CI condition slots and their claimed sessions
 - `ci_results`: one row per CI trial result
 - `pwf_results`: one row per PWF module task result
 - `pwf_comprehension_events`: one immutable row per comprehension submission or valid staff unlock

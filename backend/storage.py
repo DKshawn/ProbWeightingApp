@@ -2,13 +2,15 @@ import hashlib
 import json
 import os
 import random
+import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool, PoolTimeout
 
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -16,11 +18,18 @@ ALLOW_MEMORY_STORAGE = os.getenv("ALLOW_MEMORY_STORAGE") == "1"
 
 _schema_ready = False
 _SCHEMA_LOCK_ID = 440866261
+_schema_ready_lock = threading.Lock()
+_CI_ASSIGNMENT_TICKET_SEED = "ci-assignment-ticket-v1-20260713"
+_DATABASE_POOL_MAX_SIZE = int(os.getenv("DATABASE_POOL_MAX_SIZE", "8"))
+_DATABASE_POOL_TIMEOUT_SECONDS = float(os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "30"))
+_connection_pool: ConnectionPool | None = None
+_connection_pool_lock = threading.Lock()
 _RETRYABLE_DB_ERRORS = (
     psycopg.errors.DeadlockDetected,
     psycopg.errors.SerializationFailure,
     psycopg.errors.LockNotAvailable,
     psycopg.OperationalError,
+    PoolTimeout,
 )
 _memory_sessions: dict[str, dict[str, Any]] = {}
 _memory_ci_results: list[dict[str, Any]] = []
@@ -28,6 +37,8 @@ _memory_ci_settlements: dict[str, dict[str, Any]] = {}
 _memory_utility_results: list[dict[str, Any]] = []
 _memory_pwf_results: list[dict[str, Any]] = []
 _memory_pwf_comprehension_events: list[dict[str, Any]] = []
+_memory_ci_assignment_tickets: dict[str, int] = {}
+_memory_ci_assignment_lock = threading.Lock()
 
 
 class StorageError(RuntimeError):
@@ -66,7 +77,19 @@ def _ensure_database_configured() -> None:
 
 def _connect():
     _ensure_database_configured()
-    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    global _connection_pool
+    if _connection_pool is None:
+        with _connection_pool_lock:
+            if _connection_pool is None:
+                _connection_pool = ConnectionPool(
+                    conninfo=DATABASE_URL,
+                    min_size=0,
+                    max_size=_DATABASE_POOL_MAX_SIZE,
+                    timeout=_DATABASE_POOL_TIMEOUT_SECONDS,
+                    max_idle=120,
+                    kwargs={"row_factory": dict_row},
+                )
+    return _connection_pool.connection()
 
 
 def _database_schema_ready(cur) -> bool:
@@ -75,11 +98,17 @@ def _database_schema_ready(cur) -> bool:
             "session_id", "student_id", "student_id_hash", "name", "gender", "consent_version", "consent_accepted_at", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trials", "status", "pwf_completed",
             "pwf_completed_at", "pwf_comprehension_version", "completed_at", "last_seen_at", "created_at",
+            "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size",
+            "ci_assignment_condition", "ci_assigned_n", "ci_amount_level", "ci_amount_multiplier",
+        },
+        "ci_assignment_counters": {
+            "study_mode", "next_ticket",
         },
         "ci_results": {
             "session_id", "student_id", "student_id_hash", "name", "gender", "study_mode", "experiment_mode",
             "time_pressure_seconds", "trial", "block", "n", "student_id_last_digit",
             "amount_level", "amount_multiplier", "p", "q", "r", "x", "x_prime",
+            "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size", "ci_assignment_condition",
             "y", "s", "y_prime", "pn", "qn", "rn", "sn", "choice",
             "ci_satisfied", "response_time_ms", "timed_out", "payment_details",
             "trial_payment_total", "mirror_order", "mirror_left_option", "mirror_right_option",
@@ -179,19 +208,26 @@ def ensure_schema() -> None:
     if _schema_ready:
         return
 
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            if _database_schema_ready(cur):
-                _schema_ready = True
-                return
+    # Avoid every worker thread in one API process independently checking and
+    # preparing the schema on a cold start.  Cross-process coordination still
+    # happens through the database advisory lock below.
+    with _schema_ready_lock:
+        if _schema_ready:
+            return
 
-            cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
-            if _database_schema_ready(cur):
-                _schema_ready = True
-                return
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                if _database_schema_ready(cur):
+                    _schema_ready = True
+                    return
 
-            cur.execute(
-                """
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_ID,))
+                if _database_schema_ready(cur):
+                    _schema_ready = True
+                    return
+
+                cur.execute(
+                    """
                 CREATE TABLE IF NOT EXISTS experiment_sessions (
                     session_id UUID PRIMARY KEY,
                     student_id TEXT NOT NULL,
@@ -203,6 +239,13 @@ def ensure_schema() -> None:
                     study_mode TEXT NOT NULL DEFAULT 'full',
                     experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    ci_assignment_block INTEGER,
+                    ci_assignment_position INTEGER,
+                    ci_assignment_block_size INTEGER,
+                    ci_assignment_condition TEXT,
+                    ci_assigned_n INTEGER,
+                    ci_amount_level TEXT,
+                    ci_amount_multiplier DOUBLE PRECISION,
                     trials JSONB NOT NULL,
                     status TEXT NOT NULL DEFAULT 'started',
                     pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
@@ -211,6 +254,12 @@ def ensure_schema() -> None:
                     completed_at TIMESTAMPTZ,
                     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+
+                CREATE TABLE IF NOT EXISTS ci_assignment_counters (
+                    study_mode TEXT NOT NULL CHECK (study_mode IN ('full', 'pilot')),
+                    next_ticket BIGINT NOT NULL DEFAULT 0 CHECK (next_ticket >= 0),
+                    PRIMARY KEY (study_mode)
                 );
 
                 CREATE TABLE IF NOT EXISTS ci_results (
@@ -229,6 +278,10 @@ def ensure_schema() -> None:
                     student_id_last_digit TEXT,
                     amount_level TEXT NOT NULL DEFAULT 'low',
                     amount_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    ci_assignment_block INTEGER,
+                    ci_assignment_position INTEGER,
+                    ci_assignment_block_size INTEGER,
+                    ci_assignment_condition TEXT,
                     p DOUBLE PRECISION NOT NULL,
                     q DOUBLE PRECISION NOT NULL,
                     r DOUBLE PRECISION NOT NULL,
@@ -391,6 +444,13 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS study_mode TEXT NOT NULL DEFAULT 'full',
                     ADD COLUMN IF NOT EXISTS experiment_mode TEXT NOT NULL DEFAULT 'normal',
                     ADD COLUMN IF NOT EXISTS time_pressure_seconds INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_position INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block_size INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_condition TEXT,
+                    ADD COLUMN IF NOT EXISTS ci_assigned_n INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_amount_level TEXT,
+                    ADD COLUMN IF NOT EXISTS ci_amount_multiplier DOUBLE PRECISION,
                     ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'started',
                     ADD COLUMN IF NOT EXISTS pwf_completed BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS pwf_completed_at TIMESTAMPTZ,
@@ -414,6 +474,10 @@ def ensure_schema() -> None:
                     ADD COLUMN IF NOT EXISTS student_id_last_digit TEXT,
                     ADD COLUMN IF NOT EXISTS amount_level TEXT NOT NULL DEFAULT 'low',
                     ADD COLUMN IF NOT EXISTS amount_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_position INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_block_size INTEGER,
+                    ADD COLUMN IF NOT EXISTS ci_assignment_condition TEXT,
                     ADD COLUMN IF NOT EXISTS response_time_ms INTEGER,
                     ADD COLUMN IF NOT EXISTS timed_out BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS payment_details JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -511,6 +575,9 @@ def ensure_schema() -> None:
                 CREATE INDEX IF NOT EXISTS idx_ci_results_experiment_mode
                     ON ci_results(experiment_mode);
 
+                CREATE INDEX IF NOT EXISTS idx_ci_results_assignment
+                    ON ci_results(ci_assignment_condition, ci_assignment_block);
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_ci_results_mirror_order
                     ON ci_results(session_id, mirror_order)
                     WHERE mirror_order IS NOT NULL;
@@ -554,11 +621,159 @@ def ensure_schema() -> None:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_sessions_one_completed_per_student_mode
                     ON experiment_sessions(student_id, study_mode)
                     WHERE status = 'completed';
-                """
-            )
-            _backfill_student_id_hashes(cur)
-        conn.commit()
-    _schema_ready = True
+                    """
+                )
+                # Preserve the allocation sequence when upgrading an existing
+                # deployment from the retired slot-table allocator.
+                cur.execute(
+                    """
+                    INSERT INTO ci_assignment_counters (study_mode, next_ticket)
+                    SELECT
+                        study_mode,
+                        MAX(
+                            ((ci_assignment_block - 1) * ci_assignment_block_size)
+                            + ci_assignment_position
+                        )::BIGINT
+                    FROM experiment_sessions
+                    WHERE ci_assignment_block IS NOT NULL
+                      AND ci_assignment_position IS NOT NULL
+                      AND ci_assignment_block_size IS NOT NULL
+                    GROUP BY study_mode
+                    ON CONFLICT (study_mode)
+                    DO UPDATE SET next_ticket = GREATEST(
+                        ci_assignment_counters.next_ticket,
+                        EXCLUDED.next_ticket
+                    )
+                    """
+                )
+                _backfill_student_id_hashes(cur)
+            conn.commit()
+        _schema_ready = True
+
+
+def _ci_assignment_conditions(study_mode: str) -> list[dict[str, Any]]:
+    """Return one balanced condition set for the requested study mode."""
+    if study_mode == "pilot":
+        # Pilot sessions retain the protocol's fixed N=2 while balancing the
+        # two amount scales. Formal sessions use all four cells below.
+        cells = [
+            ("N2_low", 2, "low", 1),
+            ("N2_high", 2, "high", 100),
+        ]
+    elif study_mode == "full":
+        cells = [
+            ("N2_low", 2, "low", 1),
+            ("N2_high", 2, "high", 100),
+            ("N3_low", 3, "low", 1),
+            ("N3_high", 3, "high", 100),
+        ]
+    else:
+        raise StorageError("Unsupported CI study mode for condition assignment")
+    return [
+        {
+            "assignment_condition": condition,
+            "assigned_n": assigned_n,
+            "amount_level": amount_level,
+            "amount_multiplier": amount_multiplier,
+        }
+        for condition, assigned_n, amount_level, amount_multiplier in cells
+    ]
+
+
+def _ci_assignment_for_ticket(study_mode: str, ticket: int) -> dict[str, Any]:
+    """Map one server-issued ticket to a balanced, seeded condition block."""
+    if ticket < 1:
+        raise StorageError("CI assignment ticket must be positive")
+    cells = _ci_assignment_conditions(study_mode)
+    assignment_block_size = len(cells)
+    assignment_block = ((ticket - 1) // assignment_block_size) + 1
+    assignment_position = ((ticket - 1) % assignment_block_size) + 1
+
+    # Each block contains every cell once.  Its order is pseudorandom but
+    # deterministic, so a restart never changes the condition attached to a
+    # recorded block/position.
+    block_seed = hashlib.sha256(
+        f"{_CI_ASSIGNMENT_TICKET_SEED}:{study_mode}:{assignment_block}".encode("utf-8")
+    ).digest()
+    random.Random(int.from_bytes(block_seed, "big")).shuffle(cells)
+    return {
+        "assignment_block": assignment_block,
+        "assignment_position": assignment_position,
+        "assignment_block_size": assignment_block_size,
+        **cells[assignment_position - 1],
+    }
+
+
+def _next_memory_ci_assignment(study_mode: str) -> dict[str, Any]:
+    ticket = _memory_ci_assignment_tickets.get(study_mode, 0) + 1
+    _memory_ci_assignment_tickets[study_mode] = ticket
+    return _ci_assignment_for_ticket(study_mode, ticket)
+
+
+def _next_ci_assignment(cur, study_mode: str) -> dict[str, Any]:
+    """Atomically issue the next ticket for one study mode."""
+    cur.execute(
+        """
+        INSERT INTO ci_assignment_counters (study_mode, next_ticket)
+        VALUES (%s, 1)
+        ON CONFLICT (study_mode)
+        DO UPDATE SET next_ticket = ci_assignment_counters.next_ticket + 1
+        RETURNING next_ticket
+        """,
+        (study_mode,),
+    )
+    return _ci_assignment_for_ticket(study_mode, int(cur.fetchone()["next_ticket"]))
+
+
+def _new_session_record(
+    *,
+    session_id: str,
+    student_id: str,
+    student_id_hash: str,
+    name: str,
+    gender: str,
+    consent_version: str,
+    consent_accepted_at: datetime,
+    study_mode: str,
+    experiment_mode: str,
+    time_pressure_seconds: int,
+    trials: list[dict],
+    ci_assignment: dict[str, Any],
+    pwf_comprehension_version: str | None,
+) -> dict[str, Any]:
+    """Build the canonical in-memory view of a just-created session.
+
+    A new session has no saved results, so the API can safely use this record
+    directly instead of immediately issuing another read query to Postgres.
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return {
+        "session_id": session_id,
+        "student_id": student_id,
+        "student_id_hash": student_id_hash,
+        "name": name,
+        "gender": gender,
+        "consent_version": consent_version,
+        "consent_accepted_at": consent_accepted_at.isoformat(),
+        "study_mode": study_mode,
+        "experiment_mode": experiment_mode,
+        "time_pressure_seconds": time_pressure_seconds,
+        "trials": trials,
+        "ci_assignment_block": ci_assignment["assignment_block"],
+        "ci_assignment_position": ci_assignment["assignment_position"],
+        "ci_assignment_block_size": ci_assignment["assignment_block_size"],
+        "ci_assignment_condition": ci_assignment["assignment_condition"],
+        "ci_assigned_n": ci_assignment["assigned_n"],
+        "ci_amount_level": ci_assignment["amount_level"],
+        "ci_amount_multiplier": ci_assignment["amount_multiplier"],
+        "status": "started",
+        "pwf_completed": False,
+        "pwf_completed_at": None,
+        "pwf_comprehension_version": pwf_comprehension_version,
+        "completed_at": None,
+        "last_seen_at": timestamp,
+        "created_at": timestamp,
+    }
 
 
 def create_session(
@@ -568,63 +783,109 @@ def create_session(
     gender: str,
     consent_version: str,
     consent_accepted_at: datetime,
-    trials: list[dict],
+    trial_factory: Callable[[dict[str, Any]], list[dict]],
     study_mode: str = "full",
     experiment_mode: str = "normal",
     time_pressure_seconds: int = 0,
     pwf_comprehension_version: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     student_id_hash = hash_student_id(student_id)
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
-        _memory_sessions[session_id] = {
-            "session_id": session_id,
-            "student_id": student_id,
-            "student_id_hash": student_id_hash,
-            "name": name,
-            "gender": gender,
-            "consent_version": consent_version,
-            "consent_accepted_at": consent_accepted_at.isoformat(),
-            "study_mode": study_mode,
-            "experiment_mode": experiment_mode,
-            "time_pressure_seconds": time_pressure_seconds,
-            "trials": trials,
-            "status": "started",
-            "pwf_completed": False,
-            "pwf_completed_at": None,
-            "pwf_comprehension_version": pwf_comprehension_version,
-            "completed_at": None,
-            "last_seen_at": datetime.now(timezone.utc).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return
+        with _memory_ci_assignment_lock:
+            ci_assignment = _next_memory_ci_assignment(study_mode)
+            trials = trial_factory(ci_assignment)
+            session = _new_session_record(
+                session_id=session_id,
+                student_id=student_id,
+                student_id_hash=student_id_hash,
+                name=name,
+                gender=gender,
+                consent_version=consent_version,
+                consent_accepted_at=consent_accepted_at,
+                study_mode=study_mode,
+                experiment_mode=experiment_mode,
+                time_pressure_seconds=time_pressure_seconds,
+                trials=trials,
+                ci_assignment=ci_assignment,
+                pwf_comprehension_version=pwf_comprehension_version,
+            )
+            _memory_sessions[session_id] = session
+        return _normalize_session(session) or session
 
     ensure_schema()
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO experiment_sessions (
-                    session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
-                    study_mode, experiment_mode, time_pressure_seconds, trials, pwf_comprehension_version
+    def write_session() -> dict[str, Any]:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                # Commit the tiny counter update immediately.  This leaves only
+                # the atomic increment serialized, rather than the whole session
+                # write and trial generation.  A failed session may consume a
+                # ticket, but no participant can be reassigned on resume.
+                ci_assignment = _next_ci_assignment(cur, study_mode)
+            conn.commit()
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO experiment_sessions (
+                        session_id, student_id, student_id_hash, name, gender, consent_version, consent_accepted_at,
+                        study_mode, experiment_mode, time_pressure_seconds, trials, pwf_comprehension_version
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        session_id,
+                        student_id,
+                        student_id_hash,
+                        name,
+                        gender,
+                        consent_version,
+                        consent_accepted_at,
+                        study_mode,
+                        experiment_mode,
+                        time_pressure_seconds,
+                        Jsonb([]),
+                        pwf_comprehension_version,
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    session_id,
-                    student_id,
-                    student_id_hash,
-                    name,
-                    gender,
-                    consent_version,
-                    consent_accepted_at,
-                    study_mode,
-                    experiment_mode,
-                    time_pressure_seconds,
-                    Jsonb(trials),
-                    pwf_comprehension_version,
-                ),
-            )
-        conn.commit()
+                trials = trial_factory(ci_assignment)
+                cur.execute(
+                    """
+                    UPDATE experiment_sessions
+                    SET
+                        trials = %(trials)s,
+                        ci_assignment_block = %(assignment_block)s,
+                        ci_assignment_position = %(assignment_position)s,
+                        ci_assignment_block_size = %(assignment_block_size)s,
+                        ci_assignment_condition = %(assignment_condition)s,
+                        ci_assigned_n = %(assigned_n)s,
+                        ci_amount_level = %(amount_level)s,
+                        ci_amount_multiplier = %(amount_multiplier)s
+                    WHERE session_id = %(session_id)s
+                    """,
+                    {
+                        "session_id": session_id,
+                        "trials": Jsonb(trials),
+                        **ci_assignment,
+                    },
+                )
+            conn.commit()
+        return _new_session_record(
+            session_id=session_id,
+            student_id=student_id,
+            student_id_hash=student_id_hash,
+            name=name,
+            gender=gender,
+            consent_version=consent_version,
+            consent_accepted_at=consent_accepted_at,
+            study_mode=study_mode,
+            experiment_mode=experiment_mode,
+            time_pressure_seconds=time_pressure_seconds,
+            trials=trials,
+            ci_assignment=ci_assignment,
+            pwf_comprehension_version=pwf_comprehension_version,
+        )
+
+    return _with_retry(write_session)
 
 
 def update_session_enrollment(
@@ -684,16 +945,39 @@ def _normalize_session(row: dict[str, Any] | None) -> dict[str, Any] | None:
     return normalized
 
 
-def get_session(session_id: str) -> dict[str, Any] | None:
+def get_session(
+    session_id: str,
+    *,
+    include_other_completed: bool = False,
+) -> dict[str, Any] | None:
     if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
         session = _memory_sessions.get(session_id)
-        return _normalize_session(session) if session else None
+        normalized = _normalize_session(session) if session else None
+        if normalized is not None and include_other_completed:
+            normalized["has_other_completed"] = any(
+                item.get("session_id") != session_id
+                and item.get("student_id") == normalized["student_id"]
+                and item.get("study_mode") == normalized["study_mode"]
+                and item.get("status") == "completed"
+                for item in _memory_sessions.values()
+            )
+        return normalized
 
     ensure_schema()
+    other_completed_select = """
+                    , EXISTS (
+                        SELECT 1
+                        FROM experiment_sessions AS other_session
+                        WHERE other_session.student_id = current_session.student_id
+                          AND other_session.study_mode = current_session.study_mode
+                          AND other_session.status = 'completed'
+                          AND other_session.session_id <> current_session.session_id
+                    ) AS has_other_completed
+    """ if include_other_completed else ""
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT
                     session_id::text,
                     student_id,
@@ -705,6 +989,13 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -713,8 +1004,9 @@ def get_session(session_id: str) -> dict[str, Any] | None:
                     completed_at,
                     last_seen_at,
                     created_at
-                FROM experiment_sessions
-                WHERE session_id = %s
+                {other_completed_select}
+                FROM experiment_sessions AS current_session
+                WHERE current_session.session_id = %s
                 """,
                 (session_id,),
             )
@@ -752,6 +1044,13 @@ def find_completed_submission(student_id: str, study_mode: str) -> dict[str, Any
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -801,6 +1100,13 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                     study_mode,
                     experiment_mode,
                     time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
                     trials,
                     status,
                     pwf_completed,
@@ -812,6 +1118,78 @@ def get_resume_session(student_id: str, study_mode: str) -> dict[str, Any] | Non
                 FROM experiment_sessions
                 WHERE student_id = %s AND study_mode = %s AND status <> 'completed'
                 ORDER BY last_seen_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+                """,
+                (student_id, study_mode),
+            )
+            row = cur.fetchone()
+    return _normalize_session(row)
+
+
+def get_existing_session_for_start(student_id: str, study_mode: str) -> dict[str, Any] | None:
+    """Fetch the one session relevant to a start request in a single read.
+
+    Completed submissions take precedence so a participant cannot resume an
+    abandoned session after completing another one in the same study mode.
+    """
+    if ALLOW_MEMORY_STORAGE and not DATABASE_URL:
+        matches = [
+            session
+            for session in _memory_sessions.values()
+            if (
+                session.get("student_id") == student_id
+                and session.get("study_mode") == study_mode
+            )
+        ]
+        if not matches:
+            return None
+        matches.sort(
+            key=lambda item: (
+                item.get("status") == "completed",
+                item.get("completed_at") if item.get("status") == "completed" else item.get("last_seen_at"),
+                item.get("created_at") or "",
+            ),
+            reverse=True,
+        )
+        return _normalize_session(matches[0])
+
+    ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    session_id::text,
+                    student_id,
+                    student_id_hash,
+                    name,
+                    gender,
+                    consent_version,
+                    consent_accepted_at,
+                    study_mode,
+                    experiment_mode,
+                    time_pressure_seconds,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
+                    ci_assigned_n,
+                    ci_amount_level,
+                    ci_amount_multiplier,
+                    trials,
+                    status,
+                    pwf_completed,
+                    pwf_completed_at,
+                    pwf_comprehension_version,
+                    completed_at,
+                    last_seen_at,
+                    created_at
+                FROM experiment_sessions
+                WHERE student_id = %s AND study_mode = %s
+                ORDER BY
+                    (status = 'completed') DESC,
+                    CASE WHEN status = 'completed' THEN completed_at ELSE last_seen_at END DESC NULLS LAST,
+                    created_at DESC
                 LIMIT 1
                 """,
                 (student_id, study_mode),
@@ -916,6 +1294,10 @@ def save_ci_result(record: dict[str, Any]) -> None:
     record = {
         **record,
         "student_id_hash": hash_student_id(record["student_id"]),
+        "ci_assignment_block": record.get("ci_assignment_block"),
+        "ci_assignment_position": record.get("ci_assignment_position"),
+        "ci_assignment_block_size": record.get("ci_assignment_block_size"),
+        "ci_assignment_condition": record.get("ci_assignment_condition"),
         "payment_details": {},
         "trial_payment_total": 0,
     }
@@ -945,6 +1327,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                 INSERT INTO ci_results (
                     session_id, student_id, student_id_hash, name, gender, study_mode, experiment_mode, time_pressure_seconds,
                     trial, block, n, student_id_last_digit, amount_level, amount_multiplier,
+                    ci_assignment_block, ci_assignment_position, ci_assignment_block_size, ci_assignment_condition,
                     p, q, r, x, x_prime,
                     y, s, y_prime,
                     pn, qn, rn, sn,
@@ -956,6 +1339,7 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     %(experiment_mode)s, %(time_pressure_seconds)s,
                     %(trial)s, %(block)s, %(N)s,
                     %(student_id_last_digit)s, %(amount_level)s, %(amount_multiplier)s,
+                    %(ci_assignment_block)s, %(ci_assignment_position)s, %(ci_assignment_block_size)s, %(ci_assignment_condition)s,
                     %(p)s, %(q)s, %(r)s, %(x)s, %(x_prime)s,
                     %(y)s, %(s)s, %(y_prime)s,
                     %(pN)s, %(qN)s, %(rN)s, %(sN)s,
@@ -975,6 +1359,10 @@ def save_ci_result(record: dict[str, Any]) -> None:
                     student_id_last_digit = EXCLUDED.student_id_last_digit,
                     amount_level = EXCLUDED.amount_level,
                     amount_multiplier = EXCLUDED.amount_multiplier,
+                    ci_assignment_block = EXCLUDED.ci_assignment_block,
+                    ci_assignment_position = EXCLUDED.ci_assignment_position,
+                    ci_assignment_block_size = EXCLUDED.ci_assignment_block_size,
+                    ci_assignment_condition = EXCLUDED.ci_assignment_condition,
                     p = EXCLUDED.p,
                     q = EXCLUDED.q,
                     r = EXCLUDED.r,
@@ -1552,6 +1940,10 @@ def get_ci_results_by_session(session_id: str) -> list[dict[str, Any]]:
                     student_id_last_digit,
                     amount_level,
                     amount_multiplier,
+                    ci_assignment_block,
+                    ci_assignment_position,
+                    ci_assignment_block_size,
+                    ci_assignment_condition,
                     p,
                     q,
                     r,
@@ -2056,6 +2448,10 @@ def get_ci_results_by_student(student_id: str) -> list[dict[str, Any]]:
                     cr.student_id_last_digit,
                     cr.amount_level,
                     cr.amount_multiplier,
+                    cr.ci_assignment_block,
+                    cr.ci_assignment_position,
+                    cr.ci_assignment_block_size,
+                    cr.ci_assignment_condition,
                     cr.p,
                     cr.q,
                     cr.r,

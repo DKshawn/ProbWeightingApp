@@ -25,8 +25,7 @@ try:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
-        find_completed_submission,
-        get_resume_session,
+        get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
@@ -37,7 +36,6 @@ try:
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
-        has_other_completed_submission,
         has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
@@ -66,8 +64,7 @@ except ImportError:
         StorageNotConfiguredError,
         create_session,
         create_ci_settlement,
-        find_completed_submission,
-        get_resume_session,
+        get_existing_session_for_start,
         get_session,
         get_ci_results_by_session,
         get_ci_settlement,
@@ -78,7 +75,6 @@ except ImportError:
         get_utility_results_by_student,
         get_ci_results_by_student,
         get_summary as get_storage_summary,
-        has_other_completed_submission,
         has_passed_pwf_comprehension,
         mark_session_completed_if_ready,
         mark_pwf_completed,
@@ -123,9 +119,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PWF_TIME_PRESSURE_SECONDS = 15
-
-
 def _raise_storage_http_error(exc: StorageError) -> None:
     logger.error("Storage operation failed: %s", exc)
     if isinstance(exc, DuplicateSubmissionError):
@@ -142,16 +135,6 @@ def _assign_experiment_mode(student_id: str) -> tuple[str, int]:
     return "normal", 0
 
 
-def _assign_pwf_experiment_mode(student_id: str) -> tuple[str, int]:
-    if not student_id or not student_id[-1].isdigit():
-        raise HTTPException(status_code=400, detail="学籍番号の末尾は数字で入力してください")
-
-    last_digit = int(student_id[-1])
-    if last_digit % 2 == 0:
-        return "time_pressure", PWF_TIME_PRESSURE_SECONDS
-    return "normal", 0
-
-
 def _completed_submission_error() -> None:
     raise HTTPException(
         status_code=409,
@@ -165,32 +148,44 @@ def _session_not_found_error() -> None:
 
 def _session_can_accept_writes(session_id: str) -> dict:
     try:
-        session = get_session(session_id)
+        session = get_session(session_id, include_other_completed=True)
         if session is None:
             _session_not_found_error()
         if session.get("status") == "completed":
             _completed_submission_error()
-        if has_other_completed_submission(session_id):
+        if session.get("has_other_completed"):
             _completed_submission_error()
     except StorageError as exc:
         _raise_storage_http_error(exc)
     return session
 
 
-def _build_session_response(session: dict, *, resumed: bool) -> dict:
+def _build_session_response(
+    session: dict,
+    *,
+    resumed: bool,
+    include_saved_results: bool = True,
+) -> dict:
     session_id = session["session_id"]
-    try:
-        saved_ci_results = get_ci_results_by_session(session_id)
-        ci_settlement = get_ci_settlement(session_id)
-        saved_pwf_results = get_pwf_results_by_session(session_id)
-        comprehension_required = bool(session.get("pwf_comprehension_version"))
-        comprehension_passed = (
-            has_passed_pwf_comprehension(session_id)
-            if comprehension_required
-            else True
-        )
-    except StorageError as exc:
-        _raise_storage_http_error(exc)
+    comprehension_required = bool(session.get("pwf_comprehension_version"))
+    if include_saved_results:
+        try:
+            saved_ci_results = get_ci_results_by_session(session_id)
+            ci_settlement = get_ci_settlement(session_id)
+            saved_pwf_results = get_pwf_results_by_session(session_id)
+            comprehension_passed = (
+                has_passed_pwf_comprehension(session_id)
+                if comprehension_required
+                else True
+            )
+        except StorageError as exc:
+            _raise_storage_http_error(exc)
+    else:
+        # A brand-new session cannot have any persisted trial results yet.
+        saved_ci_results = []
+        ci_settlement = None
+        saved_pwf_results = []
+        comprehension_passed = not comprehension_required
 
     pwf_completed = (
         bool(session.get("pwf_completed")) and comprehension_passed
@@ -206,9 +201,16 @@ def _build_session_response(session: dict, *, resumed: bool) -> dict:
         "consent_accepted_at": session.get("consent_accepted_at"),
         "experiment_mode": session.get("experiment_mode", "normal"),
         "time_pressure_seconds": session.get("time_pressure_seconds", 0),
-        "pwf_experiment_mode": _assign_pwf_experiment_mode(session["student_id"])[0],
-        "pwf_time_pressure_seconds": _assign_pwf_experiment_mode(session["student_id"])[1],
         "study_mode": session.get("study_mode", "full"),
+        "ci_assignment": {
+            "assignment_block": session.get("ci_assignment_block"),
+            "assignment_position": session.get("ci_assignment_position"),
+            "assignment_block_size": session.get("ci_assignment_block_size"),
+            "assignment_condition": session.get("ci_assignment_condition"),
+            "assigned_n": session.get("ci_assigned_n"),
+            "amount_level": session.get("ci_amount_level"),
+            "amount_multiplier": session.get("ci_amount_multiplier"),
+        },
         "session_status": session.get("status", "started"),
         "resumed": resumed,
         "pwf_completed": pwf_completed,
@@ -235,11 +237,10 @@ def start_session(req: SessionStartRequest):
     experiment_mode, time_pressure_seconds = _assign_experiment_mode(student_id)
 
     try:
-        if find_completed_submission(student_id, study_mode):
-            _completed_submission_error()
-
-        resume_session = get_resume_session(student_id, study_mode)
+        resume_session = get_existing_session_for_start(student_id, study_mode)
         if resume_session:
+            if resume_session.get("status") == "completed":
+                _completed_submission_error()
             if mark_session_completed_if_ready(resume_session["session_id"]):
                 _completed_submission_error()
             update_session_enrollment(
@@ -253,25 +254,26 @@ def start_session(req: SessionStartRequest):
             return _build_session_response(resume_session, resumed=True)
 
         session_id = str(uuid.uuid4())
-        trials = generate_all_trials(study_mode=study_mode, student_id=student_id)
-        create_session(
+        session = create_session(
             session_id,
             student_id,
             name,
             req.gender,
             req.consent_version,
             req.consent_accepted_at,
-            trials,
+            lambda ci_assignment: generate_all_trials(
+                study_mode=study_mode,
+                ci_assignment=ci_assignment,
+            ),
             study_mode,
             experiment_mode,
             time_pressure_seconds,
             req.pwf_comprehension_version,
         )
-        session = get_session(session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return _build_session_response(session, resumed=False)
+    return _build_session_response(session, resumed=False, include_saved_results=False)
 
 
 # ---------------------------------------------------------------------------
@@ -279,16 +281,38 @@ def start_session(req: SessionStartRequest):
 # ---------------------------------------------------------------------------
 @app.post("/api/ci-results")
 def save_ci_result(result: CiResult):
-    _session_can_accept_writes(result.session_id)
+    session = _session_can_accept_writes(result.session_id)
 
     record = result.model_dump()
+    if session.get("ci_assigned_n") in {2, 3}:
+        # Conditions are server-owned. Ignore stale or altered client metadata.
+        assigned_n = int(session["ci_assigned_n"])
+        record.update({
+            "N": assigned_n,
+            "student_id_last_digit": "",
+            "amount_level": session["ci_amount_level"],
+            "amount_multiplier": session["ci_amount_multiplier"],
+            "ci_assignment_block": session["ci_assignment_block"],
+            "ci_assignment_position": session["ci_assignment_position"],
+            "ci_assignment_block_size": session["ci_assignment_block_size"],
+            "ci_assignment_condition": session["ci_assignment_condition"],
+        })
+        record.update({
+            "pN": round(float(record["p"]) ** assigned_n, 10),
+            "qN": round(float(record["q"]) ** assigned_n, 10),
+            "rN": round(float(record["r"]) ** assigned_n, 10),
+            "sN": round(float(record["s"]) ** assigned_n, 10),
+        })
     try:
         save_ci_result_record(record)
-        session_completed = mark_session_completed_if_ready(result.session_id)
     except StorageError as exc:
         _raise_storage_http_error(exc)
 
-    return {"status": "ok", "session_completed": session_completed}
+    # Settlement is the only point at which the session can be complete.  The
+    # settlement endpoint runs the full completion check after it is written;
+    # doing that expensive check after every individual CI trial needlessly
+    # multiplies database reads under concurrent traffic.
+    return {"status": "ok", "session_completed": False}
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +487,7 @@ CI_CSV_COLUMNS = [
     "StudentID", "StudentIDHash", "Name", "Gender", "Trial", "Block", "N",
     "study_mode", "experiment_mode", "time_pressure_seconds",
     "student_id_last_digit", "amount_level", "amount_multiplier",
+    "ci_assignment_block", "ci_assignment_position", "ci_assignment_block_size", "ci_assignment_condition",
     "p", "q", "r", "x", "x_prime",
     "y", "s", "y_prime",
     "pN", "qN", "rN", "sN",
@@ -502,6 +527,10 @@ CI_FIELD_MAP = {
     "student_id_last_digit": "student_id_last_digit",
     "amount_level": "amount_level",
     "amount_multiplier": "amount_multiplier",
+    "ci_assignment_block": "ci_assignment_block",
+    "ci_assignment_position": "ci_assignment_position",
+    "ci_assignment_block_size": "ci_assignment_block_size",
+    "ci_assignment_condition": "ci_assignment_condition",
     "p": "p",
     "q": "q",
     "r": "r",

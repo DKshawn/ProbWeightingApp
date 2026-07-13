@@ -27,6 +27,7 @@ function parseArgs(argv) {
     skipDownloads: false,
     verifyResume: false,
     checkpointId: null,
+    checkpointOnly: false,
     dryRun: false,
   };
 
@@ -50,6 +51,7 @@ function parseArgs(argv) {
     else if (arg === "--skip-downloads") options.skipDownloads = true;
     else if (arg === "--verify-resume") options.verifyResume = true;
     else if (arg === "--checkpoint-id") options.checkpointId = positiveInt(next(), arg);
+    else if (arg === "--checkpoint-only") options.checkpointOnly = true;
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--help" || arg === "-h") {
       printHelp();
@@ -70,6 +72,9 @@ function parseArgs(argv) {
   }
   if (options.verifyResume && !options.checkpointId) {
     throw new Error("--verify-resume requires --checkpoint-id when --id-start is not provided");
+  }
+  if (options.checkpointOnly && !options.verifyResume) {
+    throw new Error("--checkpoint-only requires --verify-resume");
   }
   options.baseUrl = options.baseUrl.replace(/\/+$/, "");
   return options;
@@ -100,6 +105,7 @@ Options:
   --skip-downloads           Do not fetch final CI/PWF CSV files.
   --verify-resume            After all main participants pass, verify PWF and CI checkpoint recovery.
   --checkpoint-id N          Separate fake student ID for --verify-resume. Defaults to id-start + start-count.
+  --checkpoint-only          Run only the PWF/CI checkpoint recovery flow for --checkpoint-id.
   --dry-run                  Validate configuration without calling the API or writing data.
   --yes                      Required for non-localhost targets.
 `);
@@ -497,6 +503,10 @@ function buildCiResult(session, trial, trialIndex, choice = "Indifferent") {
     student_id_last_digit: trial.student_id_last_digit ?? session.studentId.slice(-1),
     amount_level: trial.amount_level ?? "low",
     amount_multiplier: trial.amount_multiplier ?? 1,
+    ci_assignment_block: trial.ci_assignment_block ?? null,
+    ci_assignment_position: trial.ci_assignment_position ?? null,
+    ci_assignment_block_size: trial.ci_assignment_block_size ?? null,
+    ci_assignment_condition: trial.ci_assignment_condition ?? null,
     p: trial.p,
     q: trial.q,
     r: trial.r,
@@ -669,22 +679,38 @@ async function main() {
   }
 
   const blocks = loadPwfBlocks(options.appFile);
-  const ids = fakeStudentIds(options.startCount, options.idStart);
+  const ids = options.checkpointOnly ? [] : fakeStudentIds(options.startCount, options.idStart);
   const checkpointStudentId = options.checkpointId
     ? String(options.checkpointId).padStart(7, "0")
     : null;
-  if (checkpointStudentId && ids.includes(checkpointStudentId)) {
+  if (!options.checkpointOnly && checkpointStudentId && ids.includes(checkpointStudentId)) {
     throw new Error("--checkpoint-id must not overlap with the main test student IDs.");
   }
   console.log("Stress test target:", options.baseUrl);
   console.log("Study mode:", options.studyMode);
-  console.log("Fake student id range:", `${ids[0]}..${ids[ids.length - 1]}`);
+  if (options.checkpointOnly) {
+    console.log("Checkpoint-only fake student ID:", checkpointStudentId);
+  } else {
+    console.log("Fake student id range:", `${ids[0]}..${ids[ids.length - 1]}`);
+  }
   console.log("PWF blocks:", blocks.map((block) => `${block.title}/${block.id}:${block.tasks.length}`).join(", "));
   if (options.dryRun) {
     console.log("Dry run: no API requests were sent and no data was written.");
     if (checkpointStudentId) console.log("Checkpoint student ID:", checkpointStudentId);
     return;
   }
+
+  if (options.checkpointOnly) {
+    const checkpointResult = await timed(
+      `checkpoint:${checkpointStudentId}`,
+      () => verifyCheckpointRecovery(options.baseUrl, checkpointStudentId, options.studyMode, blocks, options.timeoutMs),
+    );
+    printStage(summarizeStage("checkpoint recovery", [checkpointResult]));
+    if (!checkpointResult.ok) throw checkpointResult.error;
+    console.log("Checkpoint recovery passed:", JSON.stringify(checkpointResult.value));
+    return;
+  }
+
   console.log(`Phase 1: starting ${ids.length} sessions concurrently`);
 
   const startResults = await Promise.all(ids.map((studentId) => timed(
