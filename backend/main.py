@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -93,6 +94,7 @@ except ImportError:
     from trial_generator import generate_all_trials
 
 app = FastAPI(title="ProbWeightingApp API")
+logger = logging.getLogger(__name__)
 
 # CORS: local development, legacy Render URL, and Vercel preview/production URLs.
 DEFAULT_ALLOWED_ORIGINS = [
@@ -125,6 +127,7 @@ PWF_TIME_PRESSURE_SECONDS = 15
 
 
 def _raise_storage_http_error(exc: StorageError) -> None:
+    logger.error("Storage operation failed: %s", exc)
     if isinstance(exc, DuplicateSubmissionError):
         raise HTTPException(
             status_code=409,
